@@ -1,0 +1,6 @@
+repository=https://boringssl.googlesource.com/boringssl
+commit=0cd1f6a94b670e6b61af95a06e71e690ae8e3262
+source=AOSP external/boringssl checkout
+git-archive-sha256=d9006ffef9a1d72ac043ff1e641843c3d36e25bed9fda92c79072a228fb45eed
+archive-gzip-sha256=7e19ffea61ea8c025a8595dce1d55bc8107e22dbde88a2dece23aa60f51035dd
+license=Apache-2.0

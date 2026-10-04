@@ -1,28 +1,3 @@
-# Alpine 3.24.2 x86_64; aports 3.24-stable fb51f7a895bf26b8b15350f8ad64882412e0b82c
-# Recipe versions: Flatpak 1.16.6; bubblewrap 0.12.0; OSTree 2025.7; GnuPG 2.4.9; json-glib 1.10.8; libxmlb 0.3.27; gdk-pixbuf 2.44.7; AppStream 1.1.2; libfyaml 0.9.5; npth 1.8
-c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677  alpine-minirootfs-3.24.2-x86_64.tar.gz
-1e63e7f3fe44b602f34d92a6fe46fd8a3bc6be9460c03c2681e57976c658eec3  flatpak-1.16.6.tar.xz
-3f66d9e3f85396f6d7d7fbd2859f277e4fd3a9303341bfe2ff325251bda65fd4  bubblewrap-0.12.0.tar.gz
-af8d080b9585e7fd1faba8f022967e1c268ae62e20ecf32ee7b364c1e307570b  libostree-2025.7.tar.xz
-dd17ab2e9a04fd79d39d853f599cbc852062ddb9ab52a4ddeb4176fd8b302964  gnupg-2.4.9.tar.bz2
-8bd24b4f23a3065d6e5b26e98aba9ce783ea4fd781069c1b35d149694e90ca3e  npth-1.8.tar.bz2
-55c5c141a564245b8f8fbe7698663c87a45a7333c2a2c56f06f811ab73b212dd  json-glib-1.10.8.tar.xz
-e7a6d493e25b38a85fb3c46ec25be0b4eeae851a5ed1b850c8dd04e7c0a7cef8  libxmlb-0.3.27.tar.gz
-172f80e3626ec31520a970400f1a3694e04718f6c2cd2885f75250fb5a6995a4  gdk-pixbuf-2.44.7.tar.xz
-46b4257100e25a6468ceed7b3ab82441f47b119da3398d30aea6d7b91174b586  AppStream-1.1.2.tar.xz
-9acbc9737808b2833a51be0d4b361987ab6bbbb19cbda7c0c5c83148c8addd8a  libfyaml-0.9.5.tar.gz
-7a756a916bf1fb8d776186cc138806f5fd4d49bc7aa1496b9e6ec16b794f5850  tzdir.patch
-a9342682b76c9f56b8e5f013f7d55e6cdd4c68919001518d693c428b1de4bab4  busybox.patch
-b717e2f4cdc3efac55c85a0f8f790839526312b3fa9017086803666e79cee5bd  0001-include-unistd.patch
-243c3a79295519b3931f9d846cf2af5caa064a78de812ee336dc786c1567b4d0  0010-avoid-beta-warning.patch
-9bd33f7d1b875bf710a9ad58db17d8217e747733a3118ff9403e1856a2c6754a  0020-avoid-regenerating-defsincdate-use-shipped-file.patch
-9bb5282a5292f8fe4ff77253ba28bb5a2453d85ba4bdebcc646bf82bb9175c60  0110-avoid-simple-memory-dumps-via-ptrace.patch
-9b30351f7eff35c27376f7b7c73ee23a1b737b5bb293fdf97e41924ae6851e88  0210-dirmngr-hkp-avoid-potential-race-condition-when-some-host-die.patch
-a059840eed2d1e0ed977fbc7420108d91031e3c256f95eede1d8fa61e6193ee4  0230-dirmngr-avoid-automatically-checking-upstream-swdb.patch
-1b3b0f879f1cae1d734607a0f29e0ceecb186384e39a37232e60b0adcaa56bc3  0330-gpg-default-to-sha512-for-all-signature-types-on-rsa-keys.patch
-87b77fe213a66b78866f4865882d62649c8b861df7adf383cffb6a781675ed52  0340-gpg-prefer-sha512-and-sha384-in-personal-digest.patch
-6ade15b536c50a88efc2d9dc958433b0ccfaf2908025b7672753e6bfce51c3c6  0420-gpg-drop-import-clean-from-default-keyserver-import-options.patch
-f75fdd02ba73ff93e6ce5d36a6ccff3ad06f1b2e08f8918d42c912e073893a3e  HACK-revert-rfc4880bis-default.patch
-ce409e47ce4a0d8468ba7e791fd5a7311fd600a167e3a2a60f4330d5460b65be  fix-i18n.patch
-3371dd250e61d9e1633630073fefda153cd4426f72f4afa0c3373ae2e8fea03a  flathub.flatpakrepo
-a65b89b0028cc4454950a36b7d43ce931b56c04bf8bfa41e258c782575424091  ../../work/flatpak-trim.patch
+# Source archives are verified against each pinned Alpine APKBUILD sha512sums
+# by fetch-apks.sh. Package/source inputs are pinned in alpine.lock, apk.lock,
+# and the per-source APKBUILD files under alpine-src/.

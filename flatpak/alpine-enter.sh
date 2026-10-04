@@ -1,12 +1,20 @@
 #!/bin/sh
 set -eu
-SCRATCH=/mnt/data/aosp/out/pc-logs/musl-static-116
-ROOTFS=$SCRATCH/rootfs
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+ARCH=${ARCH:-$(uname -m)}
+SCRATCH=${SCRATCH:-/mnt/data/aosp/out/pc-logs/musl-324}
+ROOTFS=$SCRATCH/rootfs/$ARCH
+[ -x "$ROOTFS/bin/sh" ] || { echo "Missing offline Alpine build root: $ROOTFS" >&2; exit 1; }
 exec /usr/bin/bwrap \
   --bind "$ROOTFS" / \
-  --proc /proc --dev /dev --tmpfs /tmp \
   --bind "$SCRATCH" /scratch \
-  --bind /mnt/data/aosp/out/worktrees/musl-static-116/linux/flatpak-static /work \
+  --bind "$HERE" /work \
+  --bind "$(dirname "$HERE")/gpgme-lite" /work-gpgme-lite \
+  --proc /proc --dev /dev --tmpfs /tmp \
+  --unshare-net --unshare-user --unshare-ipc --unshare-pid --uid 0 \
   --setenv PATH /usr/bin:/usr/sbin:/bin:/sbin \
   --setenv HOME /root \
-  --unshare-user --unshare-ipc --unshare-pid --uid 0 "$@"
+  --setenv ARCH "$ARCH" \
+  --setenv FLATPAK_REPO /scratch/flatpak-work \
+  --setenv FLATPAK_COMMIT 03e6b205d01c9560a829941d95065a7c683d9667 \
+  "$@"

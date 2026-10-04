@@ -1,0 +1,9 @@
+# Source packages built by build-static.sh, in addition to code providers from
+# locked -static/-dev APKs.
+bubblewrap
+ostree
+flatpak
+curl
+libarchive
+json-glib
+libxmlb
