@@ -212,19 +212,31 @@ cc -Os -ffunction-sections -fdata-sections -c "$WORK/multicall.c" -o "$MULTI/mul
 STATIC_LIBS=$($PKG_CONFIG --libs glib-2.0 gio-unix-2.0 json-glib-1.0 libarchive libseccomp libcap libxml-2.0 gpgme libcurl liblzma ostree-1)
 STATIC_LIBS=$(printf '%s\n' "$STATIC_LIBS" | sed 's/-lostree-1//g')
 STATIC_LIBS="$STATIC_LIBS -lstdc++"
-cc -Os -static-pie -Wl,--gc-sections,-Map="$BUILD/matonos-flatpak.map" -o "$OUT/matonos-flatpak.unstripped" \
+cc -Os -static-pie -Wl,--gc-sections,-Map="$OUT/matonos-flatpak.map" -o "$OUT/matonos-flatpak.unstripped" \
   "$MULTI/multicall.o" "$MULTI/flatpak.o" "$MULTI/ostree.o" "$MULTI/bwrap.o" \
   -Wl,--start-group \
   "$BUILD/ostree/.libs/libostree-1.a" "$BUILD/ostree/.libs/libotutil.a" \
   "$BUILD/ostree/.libs/libotcore.a" "$BUILD/flatpak/out/subprojects/libglnx/libglnx.a" \
   $STATIC_LIBS -Wl,--end-group
 if awk '/^\/usr\/local\/lib\/libcrypto\.a\(/ {s=$0; sub(/^.*\(/,"",s); sub(/\).*/,"",s); print s}' \
-    "$BUILD/matonos-flatpak.map" | sort | uniq -d | grep .; then
+    "$OUT/matonos-flatpak.map" | sort | uniq -d | grep .; then
   echo 'ERROR: a BoringSSL archive member was linked more than once' >&2
   exit 1
 fi
 if nm "$OUT/matonos-flatpak.unstripped" 2>/dev/null | grep -E '(^|[[:space:]])_gpgme_|(^|[[:space:]])assuan_'; then
   echo 'ERROR: real GPGME/libassuan symbols remain in matonos-flatpak' >&2
+  exit 1
+fi
+if grep -Ei 'lib(idn2|unistring|psl)\.a\(' "$OUT/matonos-flatpak.map"; then
+  echo 'ERROR: libidn2/libunistring/libpsl archive member linked into matonos-flatpak' >&2
+  exit 1
+fi
+if nm "$OUT/matonos-flatpak.unstripped" 2>/dev/null | grep -E '(^|[[:space:]])(idn2_[[:alnum:]_]*|uninorm_[[:alnum:]_]*|u8_(mbtoucr|uctomb|strlen|strmbtouc|conv_to_encoding|conv_from_encoding)(_[[:alnum:]_]*)?|u32_(mbtouc|uctomb|strlen|strmblen)(_[[:alnum:]_]*)?)'; then
+  echo 'ERROR: libidn2/libunistring symbols remain in matonos-flatpak' >&2
+  exit 1
+fi
+if strings "$OUT/matonos-flatpak.unstripped" | grep -Ei 'libidn2|libunistring|GNU libidn2|Internationalized Domain Names in Applications'; then
+  echo 'ERROR: libidn2/libunistring strings remain in matonos-flatpak' >&2
   exit 1
 fi
 mv "$OUT/matonos-flatpak.unstripped" "$OUT/matonos-flatpak"

@@ -17,4 +17,8 @@ The OSTree curl backend sends `curl/<linked-version> flatpak/1.16.6` on
 downloads. Flathub returned 403 for its upstream `libostree/2025.7` identity;
 the curl-prefixed user agent was verified against a Flathub commit object.
 
-Licence: Apache-2.0 (`LICENSE`). Third-party sources built here keep their own licences.
+The repository's build tooling is Apache-2.0 (`LICENSE`). The statically
+linked APEX components retain their own terms; see [LICENSES.md](flatpak/LICENSES.md)
+and the generated SPDX component inventory under `flatpak/licenses/`. The
+license gate runs after every static link and blocks incompatible v3-only
+license choices.

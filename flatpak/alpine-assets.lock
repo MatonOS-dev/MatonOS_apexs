@@ -8,3 +8,5 @@
 release flatpak-alpine3.24-2026.10.05
 ea2aecdc5a37c8cadfe76ca4b1288fcb22c502e561af10833c50accffdadbcef  alpine-bin-x86_64.tar.zst
 2722f235edf036af03bf4b3771346d08d222b75e35e30da967ef80593da519f0  alpine-src.tar.zst
+# The restored source input is projected into scratch without these unused recipes.
+excluded-source-recipes=libidn2,libpsl,libunistring

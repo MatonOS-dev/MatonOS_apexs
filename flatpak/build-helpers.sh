@@ -14,7 +14,7 @@ for helper in matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak
     *) source="/work/helpers/$helper.c" ;;
   esac
   cc -std=c11 -Wall -Wextra -Werror $CFLAGS -I/work/helpers \
-    -static-pie -Wl,--gc-sections \
+    -static-pie -Wl,--gc-sections,-Map="$OUT/$helper.map" \
     "$source" -o "$OUT/$helper.unstripped"
   mv "$OUT/$helper.unstripped" "$OUT/$helper"
   strip --strip-all "$OUT/$helper"

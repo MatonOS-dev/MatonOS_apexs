@@ -4,15 +4,12 @@ acl-dev
 acl-static
 expat-static
 lz4-static
-libunistring-static
 zlib-static
 bzip2-dev
 bzip2-static
 readline-static
 ncurses-static
 brotli-static
-libpsl-static
-libidn2-static
 nghttp2-static
 libgcc-static
 build-base

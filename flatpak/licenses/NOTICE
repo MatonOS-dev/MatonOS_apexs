@@ -1,0 +1,30 @@
+MatonOS Flatpak APEX component notices
+
+The following components are statically linked into the listed binaries.
+Each component's declared SPDX expression and selected license option are recorded in linked-components.json.
+
+- DullPGP gpgme-lite 2.0.1 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- BoringSSL 0cd1f6a94b670e6b61af95a06e71e690ae8e3262 — Apache-2.0 (SPDX: Apache-2.0; source declaration: Apache-2.0)
+- bubblewrap 0.12.0 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- bzip2 1.0.8-r6 — bzip2-1.0.6 (SPDX: bzip2-1.0.6; source declaration: bzip2-1.0.6)
+- curl 8.22.0-r0 — curl (SPDX: curl; source declaration: curl)
+- Flatpak 1.16.6 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- GCC libgcc runtime 15.2.0-r5 — GPL-3.0-or-later WITH GCC-exception-3.1 (SPDX: GPL-3.0-or-later WITH GCC-exception-3.1; source declaration: GPL-3.0-or-later WITH GCC-exception-3.1)
+- GCC libstdc++ runtime 15.2.0-r5 — GPL-3.0-or-later WITH GCC-exception-3.1 (SPDX: GPL-3.0-or-later WITH GCC-exception-3.1; source declaration: GPL-3.0-or-later WITH GCC-exception-3.1)
+- GNU gettext libintl 1.0-r0 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- glib 2.88.1-r1 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- JSON-GLib 1.10.8 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- libarchive 3.8.7-r0 — BSD-2-Clause AND BSD-3-Clause AND LicenseRef-Public-Domain (SPDX: BSD-2-Clause AND BSD-3-Clause AND LicenseRef-Public-Domain; source declaration: BSD-2-Clause AND BSD-3-Clause AND Public-Domain)
+- libcap 2.78-r0 — BSD-3-Clause (SPDX: BSD-3-Clause OR GPL-2.0-only; source declaration: BSD-3-Clause OR GPL-2.0-only)
+- libeconf 0.8.3-r0 — MIT (SPDX: MIT; source declaration: MIT)
+- libffi 3.5.2-r1 — MIT (SPDX: MIT; source declaration: MIT)
+- libseccomp 2.6.0-r2 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- libxml2 2.13.9-r2 — MIT (SPDX: MIT; source declaration: MIT)
+- lz4 1.10.0-r1 — BSD-2-Clause AND GPL-2.0-or-later (SPDX: BSD-2-Clause AND GPL-2.0-or-later; source declaration: BSD-2-Clause AND GPL-2.0-or-later)
+- musl 1.2.6-r2 — MIT (SPDX: MIT; source declaration: MIT)
+- OSTree 2025.7 — LGPL-2.0-or-later (SPDX: LGPL-2.0-or-later; source declaration: LGPL-2.0-or-later)
+- pcre2 10.49-r0 — BSD-3-Clause (SPDX: BSD-3-Clause; source declaration: BSD-3-Clause)
+- util-linux libblkid/libmount 2.42.3-r1 — LGPL-2.1-or-later (SPDX: LGPL-2.1-or-later; source declaration: LGPL-2.1-or-later)
+- xz 5.8.4-r0 — GPL-2.0-or-later AND 0BSD AND LicenseRef-Public-Domain AND LGPL-2.1-or-later (SPDX: GPL-2.0-or-later AND 0BSD AND LicenseRef-Public-Domain AND LGPL-2.1-or-later; source declaration: GPL-2.0-or-later AND 0BSD AND Public-Domain AND LGPL-2.1-or-later)
+- zlib 1.3.2-r0 — Zlib (SPDX: Zlib; source declaration: Zlib)
+- zstd 1.5.7-r2 — BSD-3-Clause (SPDX: BSD-3-Clause OR GPL-2.0-or-later; source declaration: BSD-3-Clause OR GPL-2.0-or-later)
