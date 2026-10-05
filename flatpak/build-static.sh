@@ -7,7 +7,7 @@ BUILD=${BUILD:-$SCRATCH/build}
 OUT=/scratch/output
 JOBS=${JOBS:-16}
 ARCH=${ARCH:-$(uname -m)}
-SYSTEM_BWRAP=${SYSTEM_BWRAP:-/apex/com.matonos.flatpak/bin/bwrap}
+SYSTEM_BWRAP=${SYSTEM_BWRAP:-/apex/com.matonos.flatpak/bin/matonos-bwrap}
 SYSTEM_DBUS_PROXY=${SYSTEM_DBUS_PROXY:-/apex/com.matonos.flatpak/bin/xdg-dbus-proxy}
 [ "$JOBS" -le 16 ] || { echo 'JOBS must be <= 16' >&2; exit 2; }
 mkdir -p "$BUILD" "$OUT" /usr/local/lib/pkgconfig
@@ -161,9 +161,11 @@ install -D -m755 "$BUILD/ostree/ostree" "$OUT/ostree"
 readelf -l "$OUT/ostree" | grep -q INTERP && { echo 'BLOCKED: OSTree still has an ELF interpreter' >&2; exit 3; } || :
 readelf -d "$OUT/ostree" 2>/dev/null | grep -q NEEDED && { echo 'BLOCKED: OSTree still needs shared libraries' >&2; exit 3; } || :
 # Meson requires configured external helper paths to exist at configure time.
-# These build-root-only aliases satisfy that check; neither path is packaged.
+# Put a regular
+# build-only bwrap file at the final shim path; the device tree stages its own
+# shim there, which dispatches the multicall ELF with argv[0]=bwrap.
 mkdir -p /apex/com.matonos.flatpak/bin
-ln -sf /usr/bin/bwrap /apex/com.matonos.flatpak/bin/bwrap
+install -D -m755 /usr/bin/bwrap /apex/com.matonos.flatpak/bin/matonos-bwrap
 rm -f /apex/com.matonos.flatpak/bin/xdg-dbus-proxy
 cat > /apex/com.matonos.flatpak/bin/xdg-dbus-proxy <<'PROXY'
 #!/bin/sh
@@ -235,10 +237,7 @@ if strings "$OUT/matonos-flatpak" | grep -E 'OpenSSL [123]\\.[0-9]|OpenSSL versi
   echo 'ERROR: OpenSSL version strings remain in matonos-flatpak' >&2
   exit 1
 fi
-ln -sfn matonos-flatpak "$OUT/flatpak"
-ln -sfn matonos-flatpak "$OUT/ostree"
-ln -sfn matonos-flatpak "$OUT/bwrap"
-if nm "$OUT/flatpak" 2>/dev/null | grep -E 'gdk_pixbuf_|as_metadata_'; then
+if nm "$OUT/matonos-flatpak" 2>/dev/null | grep -E 'gdk_pixbuf_|as_metadata_'; then
   echo 'ERROR: Flatpak contains unwanted GdkPixbuf/AppStream symbols' >&2
   exit 1
 fi
@@ -246,7 +245,7 @@ if strings "$OUT/matonos-flatpak" | grep -E 'gdk_pixbuf_|as_metadata_'; then
   echo 'ERROR: Flatpak contains unwanted GdkPixbuf/AppStream strings' >&2
   exit 1
 fi
-bin_list='matonos-flatpak flatpak ostree bwrap'
+bin_list='matonos-flatpak'
 for bin in $bin_list; do
   test -x "$OUT/$bin"
   file "$OUT/$bin"
@@ -254,10 +253,11 @@ for bin in $bin_list; do
   readelf -d "$OUT/$bin" 2>/dev/null | grep -q NEEDED && { echo "ERROR: $bin has NEEDED" >&2; exit 1; } || :
   printf '%s %s bytes\n' "$bin" "$(stat -c %s "$OUT/$bin")"
 done
-"$OUT/flatpak" --version
-"$OUT/flatpak" remote-ls --help >/dev/null
-"$OUT/ostree" --version
-"$OUT/bwrap" --version
+cc -O2 -Wall -Wextra -Werror "$WORK/applet-exec.c" -o "$BUILD/applet-exec"
+"$BUILD/applet-exec" "$OUT/matonos-flatpak" flatpak --version
+"$BUILD/applet-exec" "$OUT/matonos-flatpak" flatpak remote-ls --help >/dev/null
+"$BUILD/applet-exec" "$OUT/matonos-flatpak" ostree --version
+"$BUILD/applet-exec" "$OUT/matonos-flatpak" bwrap --version
 if "$OUT/matonos-flatpak" unknown-tool >/dev/null 2>&1; then
   echo 'ERROR: unknown multicall tool was accepted' >&2
   exit 1

@@ -9,8 +9,9 @@
 +  const curl_version_info_data *curl_version = curl_version_info (CURLVERSION_NOW);
 +  g_autofree char *user_agent
 +      = g_strdup_printf ("curl/%s flatpak/1.16.6", curl_version->version);
-+  /* Upstream sends libostree/<ver> flatpak/<ver>; Flathub currently rejects
-+   * the libostree token but accepts curl/<ver> flatpak/<ver>. */
++  /* Tested against a real Flathub OSTree object on 2026-10-05: dl.flathub.org
++   * returns 403 for libostree/2025.7 flatpak/1.16.6 and 200 for this curl
++   * user agent. */
 +
 +  rc = curl_easy_setopt (req->easy, CURLOPT_USERAGENT, user_agent);
    g_assert_cmpint (rc, ==, CURLM_OK);
