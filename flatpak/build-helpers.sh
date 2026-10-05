@@ -7,27 +7,37 @@ JOBS=${JOBS:-16}
 mkdir -p "$OUT"
 (cd "$WORK" && sha256sum -c helpers/SOURCE.sha256)
 CFLAGS='-Os -ffunction-sections -fdata-sections'
-for helper in matonos-bwrap matonos-app-exec; do
+for helper in matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak-store; do
+  case "$helper" in
+    flatpak-env-wrapper) source=/work/helpers/linux/flatpak/flatpak-env-wrapper.c ;;
+    matonos-flatpak-store) source=/work/helpers/install/linuxd/FlatpakStore.c ;;
+    *) source="/work/helpers/$helper.c" ;;
+  esac
   cc -std=c11 -Wall -Wextra -Werror $CFLAGS -I/work/helpers \
     -static-pie -Wl,--gc-sections \
-    "/work/helpers/$helper.c" -o "$OUT/$helper.unstripped"
+    "$source" -o "$OUT/$helper.unstripped"
   mv "$OUT/$helper.unstripped" "$OUT/$helper"
   strip --strip-all "$OUT/$helper"
 done
-# Host launch probe variant: same musl toolchain and release flags, with only
-# test-only machine-id/udev path redirection compiled in. It is not staged.
-cc -std=c11 -Wall -Wextra -Werror $CFLAGS -I/work/helpers \
+# Host-only launch probes use the same static-musl toolchain; they are not staged.
+cc -std=c11 -Wall -Wextra -Werror -Wno-unused-function $CFLAGS -I/work/helpers \
   -DMATONOS_HOST_LAUNCH_PROBE -static-pie -Wl,--gc-sections \
   /work/helpers/matonos-bwrap.c -o "$OUT/matonos-bwrap-host-probe.unstripped"
 mv "$OUT/matonos-bwrap-host-probe.unstripped" "$OUT/matonos-bwrap-host-probe"
 strip --strip-all "$OUT/matonos-bwrap-host-probe"
+cc -std=c11 -Wall -Wextra -Werror -Wno-unused-function $CFLAGS -I/work/helpers \
+  -DMATONOS_HOST_LAUNCH_PROBE -static-pie -Wl,--gc-sections \
+  /work/helpers/linux/flatpak/flatpak-env-wrapper.c \
+  -o "$OUT/flatpak-env-wrapper-host-probe.unstripped"
+mv "$OUT/flatpak-env-wrapper-host-probe.unstripped" "$OUT/flatpak-env-wrapper-host-probe"
+strip --strip-all "$OUT/flatpak-env-wrapper-host-probe"
 checkdir="$OUT/apex-check"
 rm -rf "$checkdir"
 mkdir -p "$checkdir"
-for binary in matonos-flatpak matonos-bwrap matonos-app-exec; do
+for binary in matonos-flatpak matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak-store; do
   ln -s "../$binary" "$checkdir/$binary"
 done
 "$WORK/check-static-apex.sh" "$checkdir"
-for helper in matonos-bwrap matonos-app-exec; do
+for helper in matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak-store flatpak-env-wrapper-host-probe; do
   printf '%s %s bytes\n' "$helper" "$(stat -c %s "$OUT/$helper")"
 done

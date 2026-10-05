@@ -25,7 +25,7 @@ for binary in "$dir"/*; do
   fi
 done
 [ "$found" -eq 1 ] || { echo "ERROR: no executable APEX binaries in $dir" >&2; exit 1; }
-for name in matonos-flatpak matonos-bwrap matonos-app-exec; do
+for name in matonos-flatpak matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak-store; do
   [ -x "$dir/$name" ] || { echo "ERROR: missing staged binary $name" >&2; exit 1; }
 done
 echo "PASS staged APEX ELF checks: $dir"
