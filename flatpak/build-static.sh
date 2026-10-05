@@ -27,7 +27,7 @@ while read -r name version sha file; do
   [ -n "$name" ] || continue
   [ -f "$APKDIR/$file" ] || { echo "Missing locked APK $file" >&2; exit 1; }
   printf '%s  %s\n' "$sha" "$APKDIR/$file" | sha256sum -c -
-  apkarch=$(tar --warning=no-unknown-keyword -xzOf "$APKDIR/$file" .PKGINFO | sed -n 's/^arch = //p' | head -1)
+  apkarch=$(tar -xzOf "$APKDIR/$file" .PKGINFO | sed -n 's/^arch = //p' | head -1)
   if [ "$apkarch" = noarch ]; then
     ln -sf "$APKDIR/$file" "$BUILD/apk-repo/noarch/$file"
   else
