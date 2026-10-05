@@ -13,4 +13,8 @@ flatpak 1.16.6, ostree 2025.7, bubblewrap 0.12.0; DullPGP; curl on BoringSSL
 with FILE/HTTP/HTTPS only; no OpenSSL, no GnuPG). `matonos-flatpak` is
 ~10.6 MB. Alpine binaries/sources: see `flatpak/alpine-assets.lock`.
 
+The OSTree curl backend sends `curl/<linked-version> flatpak/1.16.6` on
+downloads. Flathub returned 403 for its upstream `libostree/2025.7` identity;
+the curl-prefixed user agent was verified against a Flathub commit object.
+
 Licence: Apache-2.0 (`LICENSE`). Third-party sources built here keep their own licences.

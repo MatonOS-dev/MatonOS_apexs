@@ -1,0 +1,18 @@
+--- a/src/libostree/ostree-fetcher-curl.c
++++ b/src/libostree/ostree-fetcher-curl.c
+@@ -827,8 +827,13 @@
+     g_assert_cmpint (rc, ==, CURLM_OK);
+   }
+ 
+-  rc = curl_easy_setopt (req->easy, CURLOPT_USERAGENT,
+-                         self->custom_user_agent ?: OSTREE_FETCHER_USERAGENT_STRING);
++  const curl_version_info_data *curl_version = curl_version_info (CURLVERSION_NOW);
++  g_autofree char *user_agent
++      = g_strdup_printf ("curl/%s flatpak/1.16.6", curl_version->version);
++  /* Upstream sends libostree/<ver> flatpak/<ver>; Flathub currently rejects
++   * the libostree token but accepts curl/<ver> flatpak/<ver>. */
++
++  rc = curl_easy_setopt (req->easy, CURLOPT_USERAGENT, user_agent);
+   g_assert_cmpint (rc, ==, CURLM_OK);
+ 
+   /* Set caching request headers */

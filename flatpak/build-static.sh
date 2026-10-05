@@ -155,6 +155,7 @@ unpack libarchive libarchive-3.8.7.tar.xz
   CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" && make -j"$JOBS" && make install)
 # OSTree 2025.7 uses the private curl build and DullPGP verifier.
 unpack ostree libostree-2025.7.tar.xz
+patch -d "$BUILD/ostree" -p1 < "$WORK/ostree-flatpak-user-agent.patch"
 (cd "$BUILD/ostree" && NOCONFIGURE=1 ./autogen.sh && PKG_CONFIG="$PKG_CONFIG" CFLAGS="$CFLAGS" LDFLAGS="$LDFLAGS" ./configure --prefix=/usr/local --libdir=/usr/local/lib --enable-static --disable-shared --with-curl --without-soup --with-libarchive --with-gpgme --disable-gtk-doc && make libglnx-config.h && make -j"$JOBS" V=1 CFLAGS="$CFLAGS $($PKG_CONFIG --cflags gpgme gpg-error)" LDFLAGS="-all-static $LDFLAGS" ostree && make -j"$JOBS" install-libLTLIBRARIES install-pkgconfigDATA install-libostreeincludeHEADERS)
 install -D -m755 "$BUILD/ostree/ostree" "$OUT/ostree"
 readelf -l "$OUT/ostree" | grep -q INTERP && { echo 'BLOCKED: OSTree still has an ELF interpreter' >&2; exit 3; } || :
