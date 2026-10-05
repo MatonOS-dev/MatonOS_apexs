@@ -2,7 +2,7 @@
 #define _GNU_SOURCE
 #endif
 /*
- * Bionic host launcher for the static Flatpak CLI. linuxd execs
+ * Static musl host launcher for the static Flatpak CLI. linuxd execs
  * /apex/com.matonos.flatpak/bin/flatpak-env-wrapper; this process prepares
  * the Android-side session and environment, then execs the static multicall
  * binary at matonos-flatpak. linuxd passes argv[0]="flatpak" or "ostree"
@@ -27,8 +27,6 @@
 #include <sys/un.h>
 #include "machine-id.h"
 #include "app-session.h"
-#include "socket-relay.h"
-#include "../dbus-broker/session-control.h"
 #include <stddef.h>
 
 #define SESSION_BUS_DIRECTORY "/data/matonos/linux/runtime/session-bus-%d"
@@ -38,72 +36,6 @@
  * LD_LIBRARY_PATH is needed. */
 #define MATON_FLATPAK_APEX "/apex/com.matonos.flatpak"
 #define MATON_FLATPAK_BIN MATON_FLATPAK_APEX "/bin"
-static volatile sig_atomic_t portal_stop;
-static void stop_portal(int number) {(void)number;portal_stop=1;}
-
-static void remove_session_directory(int fd,const char* path) {
-    if(fd>=0) {
-        (void)fchown(fd,1000,1000);(void)fchmod(fd,0700);
-        unlinkat(fd,"bus",0);unlinkat(fd,"wayland-0",0);unlinkat(fd,"X0",0);close(fd);
-        rmdir(path);
-    }
-}
-static int prepare_session_directory(const char* path) {
-    struct stat info;
-    if(lstat("/data/matonos/linux/runtime",&info) || !S_ISDIR(info.st_mode) ||
-       info.st_uid!=getuid() || (info.st_mode&07777)!=0711)return -1;
-    int created=mkdir(path,0700)==0;
-    if(!created && errno!=EEXIST)return -1;
-    int fd=open(path,O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-    if(fd<0 || fstat(fd,&info) || info.st_uid!=getuid()) {
-        if(fd>=0)close(fd);
-        if(created)rmdir(path);
-        return -1;
-    }
-    /* A live supervisor uniquely owns this PID. Remove only named sockets
-     * left by abrupt death, after checking the native directory's owner. */
-    const char* names[]={"bus","wayland-0","X0"};
-    for(unsigned i=0;i<3;i++) {
-        if(fstatat(fd,names[i],&info,AT_SYMLINK_NOFOLLOW)) {
-            if(errno==ENOENT)continue;
-        } else if(S_ISSOCK(info.st_mode) && !unlinkat(fd,names[i],0))continue;
-        close(fd);if(created)rmdir(path);return -1;
-    }
-    if(fchmod(fd,0710) || fchown(fd,1000,(gid_t)atoi(getenv("MATON_APP_UID")))){remove_session_directory(fd,path);return -1;}
-    return fd;
-}
-
-static int display_listener(int directory,const char* name) {
-    struct sockaddr_un address={.sun_family=AF_UNIX};
-    snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/%s",directory,name);
-    int fd=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
-    if(fd>=0 && !bind(fd,(struct sockaddr*)&address,sizeof(address)) &&
-       !fchmodat(directory,name,0660,0) && !fchownat(directory,name,1000,(gid_t)atoi(getenv("MATON_APP_UID")),0) && !listen(fd,16))return fd;
-    if(fd>=0)close(fd);
-    return -1;
-}
-static void accept_display(int listener,int directory,const char* name,unsigned* connections) {
-    int client=accept4(listener,NULL,NULL,SOCK_CLOEXEC);
-    if(client<0)return;
-    if((*connections)++>=128){close(client);return;}
-    int upstream=socket(AF_UNIX,SOCK_STREAM|SOCK_CLOEXEC,0);
-    struct sockaddr_un address={.sun_family=AF_UNIX};
-    snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/%s",directory,name);
-    if(upstream<0 || connect(upstream,(struct sockaddr*)&address,sizeof(address))) {
-        if(upstream>=0)close(upstream);
-        close(client);return;
-    }
-    struct timeval timeout={.tv_sec=5};
-    setsockopt(client,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
-    setsockopt(upstream,SOL_SOCKET,SO_SNDTIMEO,&timeout,sizeof(timeout));
-    WaylandRelay* relay=malloc(sizeof(*relay));pthread_t thread;
-    if(relay){relay->client=client;relay->compositor=upstream;}
-    pthread_attr_t attributes;pthread_attr_init(&attributes);pthread_attr_setstacksize(&attributes,256*1024);
-    int error=relay ? pthread_create(&thread,&attributes,relay_wayland,relay) : ENOMEM;
-    pthread_attr_destroy(&attributes);
-    if(error){free(relay);close(client);close(upstream);}else pthread_detach(thread);
-}
-
 static int valid_dns_server(const char* server) {
     unsigned char address[16];
     if(inet_pton(AF_INET,server,address)==1 || inet_pton(AF_INET6,server,address)==1)return 1;
@@ -206,185 +138,6 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     }
     unlink(path);_exit(0);
 }
-/* Query the actual image CLI, bypassing this wrapper (no recursive portal
- * startup). Bounded output/time; a broken CLI reports unknown and fails closed. */
-static void system_flatpak_version(char version[64]) {
-    snprintf(version,64,"unknown");
-    int output[2];if(pipe2(output,O_CLOEXEC))return;
-    pid_t child=fork();
-    if(child<0){close(output[0]);close(output[1]);return;}
-    if(child==0) {
-        close(output[0]);
-        if(dup2(output[1],STDOUT_FILENO)<0)_exit(127);
-        close(output[1]);
-        execl(MATON_FLATPAK_BIN "/matonos-flatpak","flatpak","--version",NULL);
-        _exit(127);
-    }
-    close(output[1]);
-    if(fcntl(output[0],F_SETFL,O_NONBLOCK)<0) {
-        close(output[0]);kill(child,SIGKILL);while(waitpid(child,NULL,0)<0&&errno==EINTR){};return;
-    }
-    char text[128];size_t used=0;int status=0,exited=0;
-    struct timespec start,now;clock_gettime(CLOCK_MONOTONIC,&start);
-    for(;;) {
-        ssize_t got=read(output[0],text+used,sizeof(text)-1-used);
-        if(got>0)used+=(size_t)got;
-        pid_t waited=waitpid(child,&status,WNOHANG);
-        if(waited==child){exited=1;break;}
-        if(waited<0 && errno!=EINTR)break;
-        clock_gettime(CLOCK_MONOTONIC,&now);
-        if((now.tv_sec-start.tv_sec)*1000+(now.tv_nsec-start.tv_nsec)/1000000>=2000 ||
-           used==sizeof(text)-1)break;
-        struct pollfd ready={.fd=got==0 ? -1 : output[0],.events=POLLIN};
-        (void)poll(&ready,1,20);
-    }
-    if(exited && used<sizeof(text)-1) {
-        ssize_t got=read(output[0],text+used,sizeof(text)-1-used);
-        if(got>0)used+=(size_t)got;
-    }
-    close(output[0]);
-    if(!exited){kill(child,SIGKILL);while(waitpid(child,NULL,0)<0&&errno==EINTR){};return;}
-    if(!WIFEXITED(status) || WEXITSTATUS(status)!=0)return;
-    text[used]=0;
-    while(used && (text[used-1]=='\n'||text[used-1]=='\r'||text[used-1]==' '))text[--used]=0;
-    if(strncmp(text,"Flatpak ",8) || !text[8] || strlen(text+8)>=64)return;
-    snprintf(version,64,"%s",text+8);
-}
-/* The supervisor holds the delegated directory for the whole host session.
- * It delegates a native runtime directory back to the compositor broker,
- * which exposes a second socket without relaying D-Bus credentials. Native
- * display relays also survive the initial CLI for nested portal launches.
- * The control capability never reaches application children. */
-static int __attribute__((unused)) start_session_portal(int directory, int x11_directory, const char* x11_name, const char* monitor, char* bus, size_t size) {
-    int ready[2];if(pipe2(ready,O_CLOEXEC))return -1;
-    pid_t supervisor=fork();
-    if(supervisor<0){close(ready[0]);close(ready[1]);return -1;}
-    if(supervisor==0) {
-        close(ready[0]);
-        char native_directory[128],bus_path[160];
-        snprintf(native_directory,sizeof(native_directory),SESSION_BUS_DIRECTORY,getpid());
-        snprintf(bus_path,sizeof(bus_path),"%s/bus",native_directory);
-        int native_fd=prepare_session_directory(native_directory);
-        if(native_fd<0)_exit(127);
-        /* Nested portal launches outlive the initial CLI's linuxd relays.
-         * Retain both display capabilities here and expose native sockets. */
-        int wayland_listener=display_listener(native_fd,"wayland-0");
-        int x11_listener=x11_directory>=0 ? display_listener(native_fd,"X0") : -1;
-        if(wayland_listener<0 || (x11_directory>=0 && x11_listener<0)) {
-            remove_session_directory(native_fd,native_directory);_exit(127);
-        }
-        /* The runtime parent is system-owned 0700. Only the broker gets this
-         * directory capability; application sandboxes receive one bus socket. */
-        struct sigaction stop={.sa_handler=stop_portal};sigemptyset(&stop.sa_mask);
-        if(sigaction(SIGTERM,&stop,NULL) || sigaction(SIGINT,&stop,NULL)) {
-            remove_session_directory(native_fd,native_directory);_exit(127);
-        }
-        char flatpak_version[64];system_flatpak_version(flatpak_version);
-        struct sockaddr_un address={.sun_family=AF_UNIX};
-        snprintf(address.sun_path,sizeof(address.sun_path),"/proc/self/fd/%d/bus-control",directory);
-        int control=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);
-        if(control<0 || connect(control,(struct sockaddr*)&address,sizeof(address))) {
-            remove_session_directory(native_fd,native_directory);_exit(127);
-        }
-        int gate[2];if(pipe2(gate,O_CLOEXEC)) {
-            remove_session_directory(native_fd,native_directory);_exit(127);
-        }
-        pid_t parent=getpid(),portal=fork();
-        if(portal<0){remove_session_directory(native_fd,native_directory);_exit(127);}
-        if(portal==0) {
-            close(196);close(gate[1]);close(control);close(ready[1]);close(directory);
-            close(native_fd);
-            close(wayland_listener);if(x11_listener>=0)close(x11_listener);
-            signal(SIGTERM,SIG_DFL);signal(SIGINT,SIG_DFL);
-            if(x11_directory>=0)close(x11_directory);
-            if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(127);
-            char value=0;if(read(gate[0],&value,1)!=1 || value!=1)_exit(127);
-            close(gate[0]);
-            char address[192];snprintf(address,sizeof(address),"unix:path=%s",bus_path);
-            if(setenv("DBUS_SESSION_BUS_ADDRESS",address,1))_exit(127);
-            snprintf(address,sizeof(address),"%s/wayland-0",native_directory);
-            if(setenv("WAYLAND_DISPLAY",address,1))_exit(127);
-            if(x11_directory>=0) {
-                snprintf(address,sizeof(address),"%s/X0",native_directory);
-                if(setenv("MATON_X11_SOCKET",address,1))_exit(127);
-            } else unsetenv("MATON_X11_SOCKET");
-            if(session_portal_uid())_exit(127);
-            execl(MATON_FLATPAK_BIN "/flatpak-portal","flatpak-portal",NULL);_exit(127);
-        }
-        close(gate[0]);
-        struct stat host_directory;
-        if(fstat(directory,&host_directory) || host_directory.st_uid<10000 ||
-           fchmod(native_fd,0750) ||
-           fchown(native_fd,host_directory.st_uid,(gid_t)atoi(getenv("MATON_APP_UID")))) {
-            kill(portal,SIGTERM);remove_session_directory(native_fd,native_directory);_exit(127);
-        }
-        struct MatonSessionRegistration registration={.pid=portal};
-        snprintf(registration.flatpak_version,sizeof(registration.flatpak_version),"%s",flatpak_version);
-        snprintf(registration.monitor,sizeof(registration.monitor),"%s",monitor);
-        struct MatonSessionReply reply={0};
-        struct pollfd event={.fd=control,.events=POLLIN};
-        union { struct cmsghdr align; char bytes[CMSG_SPACE(sizeof(int))]; } ancillary={0};
-        struct iovec payload={.iov_base=&registration,.iov_len=sizeof(registration)};
-        struct msghdr packet={.msg_iov=&payload,.msg_iovlen=1,.msg_control=ancillary.bytes,.msg_controllen=sizeof(ancillary.bytes)};
-        struct cmsghdr* rights=CMSG_FIRSTHDR(&packet);
-        rights->cmsg_level=SOL_SOCKET;rights->cmsg_type=SCM_RIGHTS;rights->cmsg_len=CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(rights),&native_fd,sizeof(native_fd));
-        int ok=sendmsg(control,&packet,MSG_NOSIGNAL)==sizeof(registration) &&
-            poll(&event,1,5000)>0 && recv(control,&reply,sizeof(reply),MSG_TRUNC)==sizeof(reply);
-        if(ok && reply.status==MATON_SESSION_FLATPAK_UNSUPPORTED) {
-            fprintf(stderr,"matonos-flatpak: %.*s: %.*s\n",
-                (int)sizeof(reply.error),reply.error,(int)sizeof(reply.message),reply.message);
-            ok=0;
-        } else if(!ok) {
-            fprintf(stderr,"matonos-flatpak: invalid or missing session portal registration reply\n");
-        }
-        if(ok && reply.status==0) {
-            char value=1;ok=write(gate[1],&value,1)==1;
-            if(ok)ok=poll(&event,1,5000)>0 && recv(control,&value,1,0)==1 && value==1;
-        } else if(ok && reply.status==2) {
-            close(gate[1]);gate[1]=-1;
-            kill(portal,SIGTERM);while(waitpid(portal,NULL,0)<0&&errno==EINTR){}
-            close(wayland_listener);if(x11_listener>=0)close(x11_listener);
-            remove_session_directory(native_fd,native_directory);
-            (void)!write(ready[1],&reply.supervisor,sizeof(reply.supervisor));_exit(0);
-        } else ok=0;
-        if(gate[1]>=0)close(gate[1]);
-        if(ok)(void)!write(ready[1],&parent,sizeof(parent));
-        close(ready[1]);
-        /* Do not reap until control EOF has revoked the registered PID. A
-         * zombie reserves the PID against reuse during broker revocation. */
-        unsigned connections=0;
-        while(ok && !portal_stop) {
-            struct pollfd life={.fd=196,.events=POLLIN};
-            if(poll(&life,1,0)>0 && life.revents)break;
-            siginfo_t info={0};
-            if(waitid(P_PID,portal,&info,WEXITED|WNOHANG|WNOWAIT)<0 || info.si_pid)break;
-            struct pollfd events[3]={event,{.fd=wayland_listener,.events=POLLIN},{.fd=x11_listener,.events=POLLIN}};
-            int rc=poll(events,3,100);
-            if(rc<0 && errno==EINTR)continue;
-            if(rc<0 || events[0].revents)break;
-            if(events[1].revents&POLLIN)accept_display(wayland_listener,directory,"wayland-0",&connections);
-            if(events[2].revents&POLLIN)accept_display(x11_listener,x11_directory,x11_name,&connections);
-        }
-        kill(portal,SIGTERM);
-        /* Closing control before reaping reserves the child PID until the
-         * broker acknowledges revocation by closing its end. */
-        shutdown(control,SHUT_WR);
-        char byte;while(recv(control,&byte,1,0)<0&&errno==EINTR){}
-        close(control);
-        while(waitpid(portal,NULL,0)<0&&errno==EINTR){}
-        close(wayland_listener);if(x11_listener>=0)close(x11_listener);
-        remove_session_directory(native_fd,native_directory);
-        close(directory);if(x11_directory>=0)close(x11_directory);_exit(ok?0:127);
-    }
-    close(ready[1]);pid_t owner=0;
-    struct pollfd event={.fd=ready[0],.events=POLLIN};
-    int ok=poll(&event,1,12000)>0 && read(ready[0],&owner,sizeof(owner))==sizeof(owner) && owner>0;
-    close(ready[0]);
-    if(!ok){kill(supervisor,SIGTERM);while(waitpid(supervisor,NULL,0)<0&&errno==EINTR){}return -1;}
-    snprintf(bus,size,"unix:path=" SESSION_BUS_DIRECTORY "/bus",owner);return 0;
-}
-
 #ifdef MATONOS_HOST_LAUNCH_PROBE
 int main(int argc, char** argv) {
     if (argc < 3 || strcmp(argv[1], "--host-probe")) {

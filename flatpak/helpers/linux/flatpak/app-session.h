@@ -30,28 +30,16 @@ static int session_text(const char* path,char* text,size_t size) {
 }
 static int session_owner(AppSession* s,int initial) {
     memset(s,0,sizeof(*s));s->lifeline=-1;s->group=-1;
-    if(initial && getuid()!=1000){errno=EPERM;return -1;}
+    /* Portals now run in the compositor, so there is no native portal-spawned
+     * nested launch; every authenticated request is the initial linuxd launch. */
+    if(!initial || getuid()!=1000){errno=EPERM;return -1;}
     char owner[384]={0},extra;
-    if(initial) {
+    {
         const char* value=getenv("MATON_APP_OWNER");
         if(!value || !getenv("MATON_APP_LIFELINE") || strcmp(getenv("MATON_APP_LIFELINE"),"196"))return -1;
         snprintf(owner,sizeof(owner),"%s",value);s->lifeline=196;
         struct stat st;if(fstat(196,&st)||!S_ISFIFO(st.st_mode))return -1;
         if(fcntl(196,F_SETFD,FD_CLOEXEC))return -1;
-    } else {
-        char path[96],exe[256],env[65536];
-        snprintf(path,sizeof(path),"/proc/%d/exe",getppid());
-        ssize_t n=readlink(path,exe,sizeof(exe)-1);
-        if(n<=0)return -1;
-        exe[n]=0;
-        if(strcmp(exe,"/apex/com.matonos.flatpak/bin/flatpak-portal"))return -1;
-        snprintf(path,sizeof(path),"/proc/%d/environ",getppid());
-        int got=session_text(path,env,sizeof(env));if(got<0)return -1;
-        for(int i=0;i<got;) {
-            size_t len=strnlen(env+i,(size_t)(got-i));
-            if(len>16 && !strncmp(env+i,"MATON_APP_OWNER=",16))snprintf(owner,sizeof(owner),"%s",env+i+16);
-            i+=(int)len+1;
-        }
     }
     if(sscanf(owner,"%u:%d:%d:%255[A-Za-z0-9._-]%c",&s->uid,&s->pid,&s->controllers,s->id,&extra)!=4 ||
        s->uid%100000<10000 || s->uid%100000>=20000 || s->pid<=0 || (s->controllers!=0 && s->controllers!=1))return -1;
@@ -85,21 +73,6 @@ static int session_owner(AppSession* s,int initial) {
     snprintf(s->data_dir,sizeof(s->data_dir),"/data/matonos/linux/apps/%u",s->uid);
     snprintf(s->home,sizeof(s->home),"%s/home",s->data_dir);
     return 0;
-}
-static int session_portal_uid(void) {
-    uid_t uid=(uid_t)atoi(getenv("MATON_APP_UID"));
-    struct __user_cap_header_struct h={.version=_LINUX_CAPABILITY_VERSION_3};
-    struct __user_cap_data_struct caps[2]={{0}};
-    if(uid%100000<10000 || uid%100000>=20000 || syscall(SYS_capget,&h,caps) || prctl(PR_SET_KEEPCAPS,1) ||
-       setresgid(uid,uid,uid) || setresuid(uid,uid,uid))return -1;
-    caps[0].effective=caps[0].permitted;
-    caps[0].inheritable=caps[0].permitted;
-    if(syscall(SYS_capset,&h,caps))return -1;
-    for(unsigned i=0;i<32;i++)if(caps[0].permitted&(1U<<i))
-        if(prctl(PR_CAP_AMBIENT,PR_CAP_AMBIENT_RAISE,i,0,0))return -1;
-    // The wrapper reads this immutable environment when authenticating a
-    // nested launch. MAC denies app ptrace of this linuxd-domain process.
-    return prctl(PR_SET_DUMPABLE,1);
 }
 static int session_home(AppSession* s) {
     const char* paths[]={s->data_dir,s->home};
