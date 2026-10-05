@@ -36,5 +36,14 @@ main(int argc, char **argv)
   if (argc < 2)
     return usage();
 
-  return dispatch(argv[1], argc - 1, argv + 1);
+  /* Flatpak's build-update-repo worker re-execs /proc/self/exe with argv[0]
+   * set to this real filename and argv[1] set to its Flatpak command. Keep
+   * explicit applet selectors for build-time smoke checks, then route normal
+   * self-reexecs to Flatpak's command table. */
+  if (strcmp(argv[1], "flatpak") == 0 ||
+      strcmp(argv[1], "ostree") == 0 ||
+      strcmp(argv[1], "bwrap") == 0)
+    return dispatch(argv[1], argc - 1, argv + 1);
+
+  return flatpak_main(argc, argv);
 }

@@ -258,10 +258,11 @@ cc -O2 -Wall -Wextra -Werror "$WORK/applet-exec.c" -o "$BUILD/applet-exec"
 "$BUILD/applet-exec" "$OUT/matonos-flatpak" flatpak remote-ls --help >/dev/null
 "$BUILD/applet-exec" "$OUT/matonos-flatpak" ostree --version
 "$BUILD/applet-exec" "$OUT/matonos-flatpak" bwrap --version
-if "$OUT/matonos-flatpak" unknown-tool >/dev/null 2>&1; then
+"$BUILD/applet-exec" "$OUT/matonos-flatpak" matonos-flatpak build-update-repo --help >/dev/null
+if "$BUILD/applet-exec" "$OUT/matonos-flatpak" unknown-tool >/dev/null 2>&1; then
   echo 'ERROR: unknown multicall tool was accepted' >&2
   exit 1
 else
   status=$?
-  [ "$status" -eq 2 ] || { echo "ERROR: unknown tool returned $status, expected 2" >&2; exit 1; }
+  [ "$status" -eq 2 ] || { echo "ERROR: unknown applet returned $status, expected 2" >&2; exit 1; }
 fi
