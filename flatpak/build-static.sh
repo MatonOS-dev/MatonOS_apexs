@@ -253,6 +253,9 @@ for bin in $bin_list; do
   readelf -d "$OUT/$bin" 2>/dev/null | grep -q NEEDED && { echo "ERROR: $bin has NEEDED" >&2; exit 1; } || :
   printf '%s %s bytes\n' "$bin" "$(stat -c %s "$OUT/$bin")"
 done
+# The canonical C sources live in the MatonOS device tree. Its staging script
+# refreshes these build inputs and SOURCE.sha256 before entering Alpine.
+"$WORK/build-helpers.sh"
 cc -O2 -Wall -Wextra -Werror "$WORK/applet-exec.c" -o "$BUILD/applet-exec"
 "$BUILD/applet-exec" "$OUT/matonos-flatpak" flatpak --version
 "$BUILD/applet-exec" "$OUT/matonos-flatpak" flatpak remote-ls --help >/dev/null

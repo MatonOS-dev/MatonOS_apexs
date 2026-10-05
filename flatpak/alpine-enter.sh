@@ -7,8 +7,8 @@ ROOTFS=$SCRATCH/rootfs/$ARCH
 INPUTS=${ALPINE_INPUTS_DIR:-$SCRATCH/inputs}
 GPGME_LITE_SRC=${GPGME_LITE_SRC:-$(CDPATH= cd -- "$HERE/../../DullPGP" && pwd)}
 [ -x "$ROOTFS/bin/sh" ] || { echo "Missing offline Alpine build root: $ROOTFS" >&2; exit 1; }
-[ -f "$GPGME_LITE_SRC/Makefile" ] || { echo "Missing DullPGP source tree: $GPGME_LITE_SRC" >&2; exit 1; }
-[ -d "$INPUTS/alpine-bin" ] && [ -d "$INPUTS/alpine-src" ] || {
+[ "${HELPERS_ONLY:-0}" = 1 ] || [ -f "$GPGME_LITE_SRC/Makefile" ] || { echo "Missing DullPGP source tree: $GPGME_LITE_SRC" >&2; exit 1; }
+[ "${HELPERS_ONLY:-0}" = 1 ] || { [ -d "$INPUTS/alpine-bin" ] && [ -d "$INPUTS/alpine-src" ]; } || {
   echo "Missing Alpine build inputs under $INPUTS (restore pinned release assets)" >&2; exit 1;
 }
 exec /usr/bin/bwrap \
