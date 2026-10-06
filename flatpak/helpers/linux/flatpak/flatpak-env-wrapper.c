@@ -297,14 +297,18 @@ int main(int argc, char** argv) {
         unsigned tmp_uid=0;
         const char* root=install_directory_uid(flatpak_user_dir,&tmp_uid) ? flatpak_user_dir :
                 install_directory_uid(flatpak_system_dir,&tmp_uid) ? flatpak_system_dir : NULL;
-        if(root) {
+        struct stat root_info;
+        /* linuxd creates (and labels) installation roots. Before the first
+         * operation on one, use linuxd's own temp dir instead. */
+        if(root && stat(root,&root_info)==0 && S_ISDIR(root_info.st_mode)) {
             char app_tmp[160];
             snprintf(app_tmp,sizeof(app_tmp),"%s/tmp",root);
             if(mkdir(app_tmp,0700) && errno!=EEXIST) {
                 perror("matonos-flatpak: app temp dir");return 127;
             }
             if(setenv("TMPDIR",app_tmp,1)||setenv("FLATPAK_DOWNLOAD_TMPDIR",app_tmp,1))return 127;
-        }
+        } else if(setenv("TMPDIR","/data/matonos/linux/cache",1)||
+                setenv("FLATPAK_DOWNLOAD_TMPDIR","/data/matonos/linux/cache",1)) return 127;
     }
     if(owned) {
         if(setenv("MATON_APP_DATA_DIR",app.data_dir,1))return 127;
