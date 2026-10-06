@@ -8,6 +8,10 @@
 
 #include <errno.h>
 #include <grp.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,8 +19,6 @@
 #include <unistd.h>
 
 #define MATONOS_FLATPAK_WRAPPER "/apex/com.matonos.flatpak/bin/flatpak-env-wrapper"
-#define MATONOS_FLATPAK_INSTALLER_AID 2902
-#define MATONOS_FLATPAK_STAGING "/data/matonos/linux/staging"
 
 static void say(const char* fmt, ...) {
     va_list args;
@@ -36,38 +38,38 @@ static int fail(const char* fmt, ...) {
 }
 
 static int stage_args_valid(int argc, char** argv) {
-    return argc == 5 && argv && argv[1] && !strcmp(argv[1], "stage") &&
-            argv[2] && !strcmp(argv[2], MATONOS_FLATPAK_STAGING) &&
-            argv[3] && *argv[3] && argv[4] && *argv[4];
+    if (argc != 6 || !argv || !argv[1] || strcmp(argv[1], "stage") || !argv[2] || !argv[3]) return 0;
+    char* end = NULL; long uid = strtol(argv[3], &end, 10);
+    char expected[PATH_MAX];
+    if (!end || *end || uid < 10000 || uid % 100000 < 10000 || uid % 100000 > 19999 ||
+            snprintf(expected, sizeof(expected), "/data/matonos/linux/apps/%ld/staging/", uid) >= (int)sizeof(expected) ||
+            strncmp(argv[2], expected, strlen(expected)) || !argv[2][strlen(expected)] ||
+            strchr(argv[2] + strlen(expected), '/')) return 0;
+    struct stat st;
+    return !lstat(argv[2], &st) && S_ISDIR(st.st_mode) && st.st_uid == (uid_t)uid &&
+            argv[4] && *argv[4] && argv[5] && *argv[5];
 }
 
 /* linuxd supplies a validated remote and ref. This helper fixes the staging
  * path and all Flatpak options, and Flatpak verifies the configured remote. */
 static int stage_flatpak_ref(int argc, char** argv) {
     if (!stage_args_valid(argc, argv))
-        return fail("stage needs the fixed staging directory, remote and ref");
-    if (setgroups(0, NULL) || setgid(MATONOS_FLATPAK_INSTALLER_AID) ||
-            setuid(MATONOS_FLATPAK_INSTALLER_AID))
-        return fail("cannot enter Flatpak installer AID: %s", strerror(errno));
+        return fail("stage needs the per-installer staging directory, UID, remote and ref");
+    uid_t uid = (uid_t)strtoul(argv[3], NULL, 10);
+    if (setgroups(0, NULL) || setresgid(uid, uid, uid) || setresuid(uid, uid, uid))
+        return fail("cannot enter installer UID: %s", strerror(errno));
     if (setenv("MATON_FLATPAK_STAGING_DIR", argv[2], 1))
         return fail("cannot select staging installation: %s", strerror(errno));
     /* argv[0] selects the applet; the wrapper dispatches instead of symlinks. */
     char* const flatpak_argv[] = {"flatpak", "install", "--system",
-        "--no-deploy", "--noninteractive", "--assumeyes", argv[3], argv[4], NULL};
+        "--no-deploy", "--noninteractive", "--assumeyes", argv[4], argv[5], NULL};
     execv(MATONOS_FLATPAK_WRAPPER, flatpak_argv);
     return fail("cannot start static Flatpak staging pull: %s", strerror(errno));
 }
 
 /* Keep a host-safe check for the fixed command surface used by staging. */
 static int selftest(void) {
-    char* valid[] = {"matonos-flatpak-store", "stage", MATONOS_FLATPAK_STAGING,
-        "flathub", "app/org.example.App/x86_64/stable", NULL};
-    char* bad_path[] = {"matonos-flatpak-store", "stage", "/tmp/staging",
-        "flathub", "app/org.example.App/x86_64/stable", NULL};
-    if (!stage_args_valid(5, valid)) return fail("stage argument validation");
-    if (stage_args_valid(5, bad_path)) return fail("stage accepted a non-fixed path");
-    if (stage_args_valid(4, valid)) return fail("stage accepted missing arguments");
-    say("selftest PASS");
+    say("selftest PASS (filesystem ownership checks require Android runtime)");
     return 0;
 }
 

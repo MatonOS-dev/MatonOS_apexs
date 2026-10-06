@@ -153,6 +153,22 @@ int main(int argc, char** argv) {
     return 127;
 }
 #else
+/* Staging runs as the installing app's UID in its own operation directory:
+ * /data/matonos/linux/apps/<euid>/staging/<operation>, owned by that UID. */
+static int installer_staging_valid(const char* path) {
+    char prefix[96];
+    uid_t uid=geteuid();
+    if(uid<10000 || uid%100000<10000 || uid%100000>19999)return 0;
+    int n=snprintf(prefix,sizeof(prefix),"/data/matonos/linux/apps/%u/staging/",(unsigned)uid);
+    if(n<0 || n>=(int)sizeof(prefix) || strncmp(path,prefix,(size_t)n))return 0;
+    const char* op=path+n;
+    size_t len=strlen(op);
+    if(!len || len>64)return 0;
+    for(size_t i=0;i<len;i++){char c=op[i];if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-'))return 0;}
+    struct stat st;
+    return !lstat(path,&st) && S_ISDIR(st.st_mode) && st.st_uid==uid;
+}
+
 int main(int argc, char** argv) {
     (void)argc;
     /* linuxd supplies the multicall applet name in argv[0]. */
@@ -161,7 +177,7 @@ int main(int argc, char** argv) {
         return 127;
     }
     const char* staging_request=getenv("MATON_FLATPAK_STAGING_DIR");
-    int installer_mode=staging_request && !strcmp(staging_request,"/data/matonos/linux/staging") && geteuid()==2902;
+    int installer_mode=staging_request && installer_staging_valid(staging_request);
     if(staging_request && !installer_mode) {
         fprintf(stderr,"matonos-flatpak: invalid staging installer context\n");return 127;
     }
@@ -269,17 +285,33 @@ int main(int argc, char** argv) {
     char dns[2048], bus[192];
     snprintf(dns,sizeof(dns),"%s",getenv("MATON_FLATPAK_DNS") ? getenv("MATON_FLATPAK_DNS") : "");
     snprintf(bus,sizeof(bus),"%s",getenv("DBUS_SESSION_BUS_ADDRESS") ? getenv("DBUS_SESSION_BUS_ADDRESS") : "");
+    /* The installer UID cannot use linuxd's shared home/cache/runtime dirs;
+     * linuxd creates installer-owned ones inside the operation directory. */
+    char staging[160], home[192], data_home[224], cache[192], tmp[192], runtime[192];
+    if(installer_mode) {
+        snprintf(staging,sizeof(staging),"%s",staging_request);
+        snprintf(home,sizeof(home),"%s/home",staging);
+        snprintf(data_home,sizeof(data_home),"%s/home/.local/share",staging);
+        snprintf(cache,sizeof(cache),"%s/cache",staging);
+        snprintf(tmp,sizeof(tmp),"%s/tmp",staging);
+        snprintf(runtime,sizeof(runtime),"%s/runtime",staging);
+    } else {
+        snprintf(home,sizeof(home),"/data/matonos/linux/flatpak-data");
+        snprintf(data_home,sizeof(data_home),"/data/matonos/linux/flatpak-data/.local/share");
+        snprintf(cache,sizeof(cache),"/data/matonos/linux/cache");
+        snprintf(tmp,sizeof(tmp),"/tmp");
+        snprintf(runtime,sizeof(runtime),"/data/matonos/linux/runtime");
+    }
     if (clearenv() != 0 ||
         setenv("PATH", MATON_FLATPAK_BIN ":/system/bin:/system/xbin", 1) != 0 ||
-        setenv("XDG_RUNTIME_DIR", "/data/matonos/linux/runtime", 1) != 0 ||
-        setenv("TMPDIR", "/tmp", 1) != 0 ||
-        setenv("HOME", "/data/matonos/linux/flatpak-data", 1) != 0 ||
-        setenv("TMPDIR", "/tmp", 1) != 0 ||
-        setenv("XDG_DATA_HOME", "/data/matonos/linux/flatpak-data/.local/share", 1) != 0 ||
-        setenv("FLATPAK_SYSTEM_DIR", installer_mode ? "/data/matonos/linux/staging" : flatpak_system_dir, 1) != 0 ||
-        setenv("FLATPAK_SYSTEM_CACHE_DIR", "/data/matonos/linux/cache", 1) != 0 ||
+        setenv("XDG_RUNTIME_DIR", runtime, 1) != 0 ||
+        setenv("HOME", home, 1) != 0 ||
+        setenv("TMPDIR", tmp, 1) != 0 ||
+        setenv("XDG_DATA_HOME", data_home, 1) != 0 ||
+        setenv("FLATPAK_SYSTEM_DIR", installer_mode ? staging : flatpak_system_dir, 1) != 0 ||
+        setenv("FLATPAK_SYSTEM_CACHE_DIR", cache, 1) != 0 ||
         setenv("FLATPAK_USER_DIR", flatpak_user_dir, 1) != 0 ||
-        setenv("FLATPAK_DOWNLOAD_TMPDIR", "/tmp", 1) != 0 ||
+        setenv("FLATPAK_DOWNLOAD_TMPDIR", tmp, 1) != 0 ||
         setenv("SSL_CERT_DIR", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
         setenv("CURL_CA_BUNDLE", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
         setenv("G_TLS_CA_PATH", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
