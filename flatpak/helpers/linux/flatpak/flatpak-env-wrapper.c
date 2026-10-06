@@ -288,6 +288,24 @@ int main(int argc, char** argv) {
         return 127;
     }
     if(setenv("MATON_SESSION_PAD_NODES",pads,1))return 127;
+    /* Host-side CLI work (remote-add's temporary GnuPG home, downloads) uses
+     * the temp dir of the app whose installation it operates on:
+     * /data/matonos/linux/apps/<uid>/tmp, preferring the stub's --user
+     * installation over the runtime app's --system one. Android's /tmp is
+     * shell-owned and not writable for us. Staging keeps its own tmp. */
+    if(!installer_mode && !owned) {
+        unsigned tmp_uid=0;
+        const char* root=install_directory_uid(flatpak_user_dir,&tmp_uid) ? flatpak_user_dir :
+                install_directory_uid(flatpak_system_dir,&tmp_uid) ? flatpak_system_dir : NULL;
+        if(root) {
+            char app_tmp[160];
+            snprintf(app_tmp,sizeof(app_tmp),"%s/tmp",root);
+            if(mkdir(app_tmp,0700) && errno!=EEXIST) {
+                perror("matonos-flatpak: app temp dir");return 127;
+            }
+            if(setenv("TMPDIR",app_tmp,1)||setenv("FLATPAK_DOWNLOAD_TMPDIR",app_tmp,1))return 127;
+        }
+    }
     if(owned) {
         if(setenv("MATON_APP_DATA_DIR",app.data_dir,1))return 127;
         char owner[384],uid[32];
