@@ -151,6 +151,7 @@ make -j"$JOBS"; make install
 # compatibility name to libc++_shared. The final CLIs explicitly link NDK
 # libc++.a, so drop the probe-only token from libtool dependency metadata.
 sed -i '/^dependency_libs=/ s/[[:space:]]-lstdc++//g' "$PREFIX/lib/libcurl.la"
+sed -i 's/[[:space:]]-lstdc++//g' "$PREFIX/lib/pkgconfig/libcurl.pc"
 "$CMAKE" -S "$SRC/liblzma" -B "$BUILD/liblzma" -G Ninja -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" -DANDROID_ABI=x86_64 -DANDROID_PLATFORM=android-36 -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$PREFIX" -DBUILD_SHARED_LIBS=OFF -DXZ_TOOL_XZ=OFF -DXZ_TOOL_LZMADEC=OFF -DXZ_TOOL_LZMAINFO=OFF -DXZ_DOC=OFF -DXZ_NLS=OFF
 "$CMAKE" --build "$BUILD/liblzma" --target install --parallel "$JOBS"
 fi

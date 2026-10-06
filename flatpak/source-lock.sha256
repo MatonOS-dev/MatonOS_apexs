@@ -1,3 +1,0 @@
-# Source archives are verified against each pinned Alpine APKBUILD sha512sums
-# by fetch-apks.sh. Package/source inputs are pinned in alpine.lock, apk.lock,
-# and the per-source APKBUILD files under alpine-src/.

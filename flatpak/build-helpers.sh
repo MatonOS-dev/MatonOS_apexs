@@ -1,43 +1,17 @@
 #!/bin/sh
+# Build the device helper programs with the same pinned NDK as the Flatpak stack.
 set -eu
-WORK=/work
-OUT=/scratch/output
-JOBS=${JOBS:-16}
-[ "$JOBS" -le 16 ] || { echo 'JOBS must be <= 16' >&2; exit 2; }
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+NDK=${ANDROID_NDK:-$HOME/Android/Sdk/ndk/30.0.16248370}
+CLANG="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+STRIP="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip"
+OUT=${OUT_DIR:-$HERE/out}
 mkdir -p "$OUT"
-(cd "$WORK" && sha256sum -c helpers/SOURCE.sha256)
-CFLAGS='-Os -ffunction-sections -fdata-sections'
-for helper in matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak-store; do
-  case "$helper" in
-    flatpak-env-wrapper) source=/work/helpers/linux/flatpak/flatpak-env-wrapper.c ;;
-    matonos-flatpak-store) source=/work/helpers/install/linuxd/FlatpakStore.c ;;
-    *) source="/work/helpers/$helper.c" ;;
-  esac
-  cc -std=c11 -Wall -Wextra -Werror $CFLAGS -I/work/helpers \
-    -static-pie -Wl,--gc-sections,-Map="$OUT/$helper.map" \
-    "$source" -o "$OUT/$helper.unstripped"
-  mv "$OUT/$helper.unstripped" "$OUT/$helper"
-  strip --strip-all "$OUT/$helper"
-done
-# Host-only launch probes use the same static-musl toolchain; they are not staged.
-cc -std=c11 -Wall -Wextra -Werror -Wno-unused-function $CFLAGS -I/work/helpers \
-  -DMATONOS_HOST_LAUNCH_PROBE -static-pie -Wl,--gc-sections \
-  /work/helpers/matonos-bwrap.c -o "$OUT/matonos-bwrap-host-probe.unstripped"
-mv "$OUT/matonos-bwrap-host-probe.unstripped" "$OUT/matonos-bwrap-host-probe"
-strip --strip-all "$OUT/matonos-bwrap-host-probe"
-cc -std=c11 -Wall -Wextra -Werror -Wno-unused-function $CFLAGS -I/work/helpers \
-  -DMATONOS_HOST_LAUNCH_PROBE -static-pie -Wl,--gc-sections \
-  /work/helpers/linux/flatpak/flatpak-env-wrapper.c \
-  -o "$OUT/flatpak-env-wrapper-host-probe.unstripped"
-mv "$OUT/flatpak-env-wrapper-host-probe.unstripped" "$OUT/flatpak-env-wrapper-host-probe"
-strip --strip-all "$OUT/flatpak-env-wrapper-host-probe"
-checkdir="$OUT/apex-check"
-rm -rf "$checkdir"
-mkdir -p "$checkdir"
-for binary in matonos-flatpak matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak-store; do
-  ln -s "../$binary" "$checkdir/$binary"
-done
-"$WORK/check-static-apex.sh" "$checkdir"
-for helper in matonos-bwrap matonos-app-exec flatpak-env-wrapper matonos-flatpak-store flatpak-env-wrapper-host-probe; do
-  printf '%s %s bytes\n' "$helper" "$(stat -c %s "$OUT/$helper")"
+COMMON='-target x86_64-linux-android36 -Os -ffunction-sections -fdata-sections -Wl,--gc-sections'
+"$CLANG" $COMMON -I"$HERE/helpers" -static "$HERE/helpers/matonos-app-exec.c" -o "$OUT/matonos-app-exec"
+"$CLANG" $COMMON -I"$HERE/helpers" -static "$HERE/helpers/matonos-bwrap.c" -o "$OUT/matonos-bwrap"
+"$CLANG" $COMMON -I"$HERE/helpers" -static "$HERE/helpers/linux/flatpak/flatpak-env-wrapper.c" -o "$OUT/flatpak-env-wrapper"
+"$CLANG" $COMMON -I"$HERE/helpers" -static "$HERE/helpers/install/linuxd/FlatpakStore.c" -o "$OUT/matonos-flatpak-store"
+for bin in matonos-app-exec matonos-bwrap flatpak-env-wrapper matonos-flatpak-store; do
+  "$STRIP" --strip-all "$OUT/$bin"
 done

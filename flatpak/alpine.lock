@@ -1,8 +1,0 @@
-architecture=x86_64
-minirootfs_url=https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-minirootfs-3.24.2-x86_64.tar.gz
-minirootfs_last_modified=Thu, 17 Sep 2026 17:32:03 GMT
-minirootfs_sha256=c5ca053cfe1d85c5b96dff8b9bc57045f7f184a30ffb6b65776409ca90388677
-aports_branch=3.24-stable
-aports_commit=d61fd049abbcf4948bcb0b1baf894bd17a1fb978
-flatpak_fork_commit=03e6b205d01c9560a829941d95065a7c683d9667
-repository=https://dl-cdn.alpinelinux.org/alpine/v3.24

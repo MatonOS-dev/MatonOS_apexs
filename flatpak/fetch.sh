@@ -10,10 +10,8 @@ while IFS='|' read -r name kind location revision digest; do
     git|git-local)
       dest=$CACHE/git/$name
       if [ ! -d "$dest/.git" ]; then
-        case "$name" in
-          flatpak) source=$LOCAL_REPOS/flatpak ;;
-          bionic-fill) source=$LOCAL_REPOS/bionic-fill ;;
-          DullPGP) source=$LOCAL_REPOS/DullPGP ;;
+        case "$kind" in
+          git-local) source=$LOCAL_REPOS/DullPGP ;;
           *) source=$location ;;
         esac
         git clone --no-checkout "$source" "$dest"
