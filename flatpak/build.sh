@@ -26,6 +26,11 @@ for exe in "$CC" "$CXX" "$AR" "$STRIP" "$READELF" "$CMAKE" "$NINJA"; do
 done
 [ -f "$MESON" ] || { echo "Missing Meson module: $MESON" >&2; exit 1; }
 mkdir -p "$BUILD" "$PREFIX" "$OUT"
+rm -f "$OUT/flatpak" "$OUT/ostree" "$OUT/bwrap" \
+  "$OUT/flatpak.unstripped" "$OUT/ostree.unstripped" "$OUT/bwrap.unstripped" \
+  "$OUT/matonos-flatpak" "$OUT/matonos-flatpak.unstripped" \
+  "$OUT/flatpak-env-wrapper" "$OUT/matonos-bwrap" "$OUT/matonos-app-exec" \
+  "$OUT/matonos-flatpak-store" "$OUT/SOURCE"
 export PATH="$(dirname "$NINJA"):$PATH"
 export CC CXX AR RANLIB=$TOOL/llvm-ranlib STRIP
 export CFLAGS='-O2 -fPIC'
@@ -165,24 +170,37 @@ if [ ! -x "$SRC/ostree/configure" ]; then
   [ -d "$ALPINE_SCRATCH/inputs" ] || { echo "Alpine inputs missing: $ALPINE_SCRATCH/inputs" >&2; exit 1; }
   [ -e "$ALPINE_WORK/rootfs" ] || ln -s "$ALPINE_SCRATCH/rootfs" "$ALPINE_WORK/rootfs"
   [ -e "$ALPINE_WORK/inputs" ] || ln -s "$ALPINE_SCRATCH/inputs" "$ALPINE_WORK/inputs"
-  SCRATCH="$ALPINE_WORK" ARCH=x86_64 ALPINE_INPUTS_DIR="$ALPINE_WORK/inputs" GPGME_LITE_SRC="$SRC/DullPGP" \
-    "$REPO/flatpak/alpine-enter.sh" sh -c 'cd /scratch/cache/src/ostree && ACLOCAL_PATH=/scratch/cache/src/DullPGP NOCONFIGURE=1 ./autogen.sh'
+  SCRATCH="$ALPINE_WORK" ARCH=x86_64 ALPINE_INPUTS_DIR="$ALPINE_WORK/inputs" \
+    GPGME_LITE_SRC="$SRC/DullPGP" ALPINE_SRC_ROOT="/scratch/$(basename "$CACHE")/src" \
+    "$REPO/flatpak/alpine-enter.sh" sh -c 'cd "$ALPINE_SRC_ROOT/ostree" && ACLOCAL_PATH="$ALPINE_SRC_ROOT/DullPGP" NOCONFIGURE=1 ./autogen.sh'
 fi
 ac_cv_c_undeclared_builtin_options='none needed' "$SRC/ostree/configure" --host="$HOST" --prefix="$PREFIX" --libdir="$PREFIX/lib" --disable-shared --enable-static --with-curl --with-gpgme --without-soup --without-soup3 --without-selinux --without-libmount --without-avahi --disable-rofiles-fuse --disable-man --disable-installed-tests --without-composefs --with-crypto=glib CC="$CC" CFLAGS="$COMPAT_CFLAGS -I$PREFIX/include/gpgme-lite" LIBS="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/x86_64-linux-android/36/libc++.a" PKG_CONFIG="$PKG_CONFIG" PKG_CONFIG_LIBDIR="$PKG_CONFIG_LIBDIR"
+printf '#include "config.h"\n' > "$BUILD/ostree/libglnx-config.h"
 make -j"$JOBS" ostree
 make install
+# libtool may fold dependency archives into a static convenience archive.
+# Keep only relocatable object members in the public libostree archive.
+OSTREE_ARCHIVE="$PREFIX/lib/libostree-1.a"
+if [ -f "$OSTREE_ARCHIVE" ]; then
+  mkdir -p "$BUILD/libostree-repack"
+  rm -f "$BUILD/libostree-repack"/*
+  (cd "$BUILD/libostree-repack"; "$AR" t "$OSTREE_ARCHIVE" | while IFS= read -r member; do
+    case "$member" in *.o) "$AR" x "$OSTREE_ARCHIVE" "$member";; esac
+  done; "$AR" qc libostree-1.a ./*.o; "$TOOL/llvm-ranlib" libostree-1.a)
+  mv "$BUILD/libostree-repack/libostree-1.a" "$OSTREE_ARCHIVE"
+fi
 
 FLATPAK_CFLAGS="-O2 -fPIC -include $SRC/bionic-fill.h"
 FLATPAK_CXXFLAGS="-O2 -fPIC -stdlib=libc++ -include $SRC/bionic-fill.h"
 meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dgtkdoc=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="$LDFLAGS" -Dcpp_link_args="$LDFLAGS"
 "$NINJA" -C "$BUILD/flatpak" -j "$JOBS"
-install -D -m755 "$BUILD/flatpak/app/flatpak" "$OUT/flatpak.unstripped"
-install -D -m755 "$BUILD/ostree/ostree" "$OUT/ostree.unstripped"
-install -D -m755 "$BUILD/bubblewrap/bwrap" "$OUT/bwrap.unstripped"
-for bin in flatpak ostree bwrap; do "$STRIP" --strip-all "$OUT/$bin.unstripped" -o "$OUT/$bin"; done
+python3 "$HERE/make-multicall.py" "$BUILD" "$OUT/matonos-flatpak.unstripped" "$TOOL/llvm-objcopy" "$CC"
+"$STRIP" --strip-all "$OUT/matonos-flatpak.unstripped" -o "$OUT/matonos-flatpak"
+rm -f "$OUT/matonos-flatpak.unstripped"
+OUT_DIR="$OUT" ANDROID_NDK="$NDK" "$HERE/build-helpers.sh"
 python3 "$HERE/license-gate.py"
 {
   echo 'flatpak-bionic source manifest'; cat "$HERE/sources.lock"; echo
-  for bin in flatpak ostree bwrap; do sha256sum "$OUT/$bin"; done
+  for bin in matonos-flatpak flatpak-env-wrapper matonos-bwrap matonos-app-exec matonos-flatpak-store; do sha256sum "$OUT/$bin"; done
 } > "$OUT/SOURCE"
 echo "Artifacts and provenance written to $OUT"

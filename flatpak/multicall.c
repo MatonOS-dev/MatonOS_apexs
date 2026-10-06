@@ -3,7 +3,7 @@
 #include <string.h>
 
 extern int flatpak_main(int argc, char **argv);
-extern int ostree_main(int argc, char **argv);
+extern int ostree_cli_main(int argc, char **argv);
 extern int bwrap_main(int argc, char **argv);
 
 static int
@@ -19,7 +19,7 @@ dispatch(const char *tool, int argc, char **argv)
   if (strcmp(tool, "flatpak") == 0)
     return flatpak_main(argc, argv);
   if (strcmp(tool, "ostree") == 0)
-    return ostree_main(argc, argv);
+    return ostree_cli_main(argc, argv);
   if (strcmp(tool, "bwrap") == 0)
     return bwrap_main(argc, argv);
   return usage();

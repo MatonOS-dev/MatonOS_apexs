@@ -9,7 +9,7 @@ flatpak|git|https://github.com/MatonOS-dev/flatpak|c2fc8fcc2de56a28af4095bb6ff65
 flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
 variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
 bionic-fill|git|https://github.com/MatonOS-dev/bionic-fill.git|a8b3eef4b3f74e27eb0b16a339a106660938af03|-
-DullPGP|git-local|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
+DullPGP|git|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
 zstd|tar|https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz|1.5.7|eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
 libxml2|tar|https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.2.tar.xz|2.15.2|c8b9bc81f8b590c33af8cc6c336dbff2f53409973588a351c95f1c621b13d09d
 json-glib|tar|https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.8.tar.xz|1.10.8|55c5c141a564245b8f8fbe7698663c87a45a7333c2a2c56f06f811ab73b212dd
