@@ -18,12 +18,18 @@ Build: `flatpak/fetch.sh && JOBS=8 flatpak/build.sh` — see
 [flatpak/README.md](flatpak/README.md). Every input is pinned in
 `flatpak/sources.lock` (commits or SHA-256).
 
-Status: cross-builds reproducibly; on an Android VM the bionic `flatpak`
-adds Flathub and reads remote metadata as an app UID (DNS through netd,
-TLS via Conscrypt, signatures via DullPGP). Not yet verified: object
-downloads from Flathub (the musl build needed a curl user agent because
-Flathub returned 403 for `libostree/…`), and the single multicall binary.
-The previous Alpine/musl build was retired on 2026-10-06 (see git history).
+Status (2026-10-06): the recipe fetches and builds reproducibly from public
+pins and emits the whole APEX payload into `flatpak/out/`: one multicall
+`matonos-flatpak` (flatpak + ostree + bwrap, 11.2 MB, needs only `libc`,
+`libm`, `libdl`), the Android-side helpers `flatpak-env-wrapper`,
+`matonos-bwrap` and `matonos-flatpak-store` (dynamically linked against the
+system bionic), and `matonos-app-exec` (fully static: it runs inside the app
+sandbox, where there is no system linker). On an Android VM, run as an app
+UID, it added Flathub and installed `org.gnome.Calculator`: DNS through
+netd, TLS via Conscrypt, signatures via DullPGP, objects downloaded with a
+`flatpak/<version>` user agent (Flathub answers 403 to `libostree/…`; the
+Flatpak fork sets the header, OSTree stays unmodified). The previous
+Alpine/musl build was retired on 2026-10-06 (see git history).
 
 The repository's build tooling is Apache-2.0 (`LICENSE`). The statically
 linked APEX components retain their own terms; see
