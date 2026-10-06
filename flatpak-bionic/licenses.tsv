@@ -1,0 +1,20 @@
+# component<TAB>SPDX expression; GPL/LGPL version 3 is prohibited
+glib|LGPL-2.1-or-later
+zstd|BSD-3-Clause
+libxml2|MIT
+json-glib|LGPL-2.1-or-later
+libxmlb|LGPL-2.1-or-later
+libseccomp|LGPL-2.1-or-later
+libcap|BSD-3-Clause
+bubblewrap|LGPL-2.1-or-later
+boringssl|ISC AND OpenSSL AND MIT
+DullPGP|LGPL-2.1-or-later
+libarchive|BSD-2-Clause
+curl|curl
+liblzma|0BSD AND LGPL-2.1-or-later
+ostree|LGPL-2.0-or-later
+flatpak|GPL-2.0-or-later
+bionic-fill|MIT
+libffi|MIT
+pcre2|BSD-3-Clause
+e2fsprogs-headers|GPL-2.0-only AND LGPL-2.0-only AND BSD-3-Clause

@@ -1,0 +1,27 @@
+# name|kind|location|revision-or-version|sha256
+glib|git|https://github.com/GNOME/glib.git|6f873bc0e6265995cebd797b969dcd5f548f91f6|-
+glib-gvdb|git|https://github.com/GNOME/gvdb.git|2b42fc75f09dbe1cd1057580b5782b08f2dcb400|-
+ostree|git|https://github.com/ostreedev/ostree.git|9fc54d6104c79c9520a9744b6d7e9130f232ce55|-
+ostree-libglnx|git|https://github.com/GNOME/libglnx.git|b415d046880d585e5161bf230590543adeea4fe6|-
+ostree-bsdiff|git|https://github.com/mendsley/bsdiff.git|b817e9491cf7b8699c8462ef9e2657ca4ccd7667|-
+flatpak|git-local|https://github.com/MatonOS-dev/flatpak|c2fc8fcc2de56a28af4095bb6ff65c31c08fde48|-
+flatpak-libglnx|git|https://gitlab.gnome.org/GNOME/libglnx.git|2ed30d8a697edb914664ef53e0406fc651a4a611|-
+variant-schema-compiler|git|https://gitlab.gnome.org/alexl/variant-schema-compiler.git|4c18b9ef404bb97ba4cfd1312f9de7cffea62334|-
+bionic-fill|git-local|https://github.com/MatonOS-dev/bionic-fill.git|a8b3eef4b3f74e27eb0b16a339a106660938af03|-
+DullPGP|git-local|https://github.com/MatonOS-dev/DullPGP.git|195ed326465e898711012cd877556510f32d3fbc|-
+zstd|tar|https://github.com/facebook/zstd/releases/download/v1.5.7/zstd-1.5.7.tar.gz|1.5.7|eb33e51f49a15e023950cd7825ca74a4a2b43db8354825ac24fc1b7ee09e6fa3
+libxml2|tar|https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.2.tar.xz|2.15.2|c8b9bc81f8b590c33af8cc6c336dbff2f53409973588a351c95f1c621b13d09d
+json-glib|tar|https://download.gnome.org/sources/json-glib/1.10/json-glib-1.10.8.tar.xz|1.10.8|55c5c141a564245b8f8fbe7698663c87a45a7333c2a2c56f06f811ab73b212dd
+libxmlb|tar|https://github.com/hughsie/libxmlb/releases/download/0.3.29/libxmlb-0.3.29.tar.xz|0.3.29|448294be33bfae62f00fa66e506f1cae80237ce71b7ab6530aefa75005eeb08a
+libseccomp|tar|https://github.com/seccomp/libseccomp/releases/download/v2.6.1/libseccomp-2.6.1.tar.gz|2.6.1|501f66c667225d53791b97e1d7cf85ab764c297d04881f60f38f451c4b0ee1be
+libcap|tar|https://kernel.org/pub/linux/libs/security/linux-privs/libcap2/libcap-2.76.tar.xz|2.76|629da4ab29900d0f7fcc36227073743119925fd711c99a1689bbf5c9b40c8e6f
+bubblewrap|tar|https://github.com/containers/bubblewrap/releases/download/v0.13.0/bubblewrap-0.13.0.tar.xz|0.13.0|4734237473c0e5d695e4e9034a34e43b2dbf5164655bd13fa59ae376b2b7a765
+boringssl|tar|https://sourceforge.net/projects/boringssl.mirror/files/0.20260929.0/boringssl-0.20260929.0.tar.gz/download|0.20260929.0|04da9ba0664e0a7f028e961c38d604f2cc6dac852a84ca0e51dc1fa051d4c8fe
+libarchive|tar|https://www.libarchive.org/downloads/libarchive-3.8.9.tar.xz|3.8.9|888c934f9d95648ecb9163dc8e23ab80a476ecb81a8f1154704a227b5b676dde
+curl|tar|https://curl.se/download/curl-8.22.0.tar.xz|8.22.0|f7ef3ae8a22e521f289803fe93543eb64c329b58aa73a9e224dfd915a2a5f4f7
+liblzma|tar|https://github.com/tukaani-project/xz/releases/download/v5.8.1/xz-5.8.1.tar.gz|5.8.1|507825b599356c10dca1cd720c9d0d0c9d5400b9de300af00e4d1ea150795543
+meson|tar|https://github.com/mesonbuild/meson/releases/download/1.12.1/meson-1.12.1.tar.gz|1.12.1|ab0a6ca09f8ef70c564c8241fb5a23957886a0b53fb58412b5e07eaf07dba743
+libffi|tar|https://github.com/libffi/libffi/releases/download/v3.5.2/libffi-3.5.2.tar.gz|3.5.2|f3a3082a23b37c293a4fcd1053147b371f2ff91fa7ea1b2a52e335676bac82dc
+pcre2|tar|https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.46/pcre2-10.46.tar.bz2|10.46|15fbc5aba6beee0b17aecb04602ae39432393aba1ebd8e39b7cabf7db883299f
+e2fsprogs-headers|deb|https://archive.ubuntu.com/ubuntu/pool/main/e/e2fsprogs/libext2fs-dev_1.47.0-2.4~exp1ubuntu4.1_amd64.deb|1.47.0-2.4~exp1ubuntu4.1|2aa2f4694b72e11a6501964266b6d54acc2c49e6af7c0c97d2433032edfdefa8
+gperf-host-tool|deb|https://archive.ubuntu.com/ubuntu/pool/universe/g/gperf/gperf_3.1-1build1_amd64.deb|3.1-1build1|f6701027304592fe819d219a5ee00d8b56ba4b2a05a7623dd923f1884d595042
