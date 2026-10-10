@@ -14,6 +14,11 @@
 #include <linux/capability.h>
 #include <sys/syscall.h>
 #include <sys/xattr.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
 
 typedef struct AppSession {
     unsigned uid;
@@ -71,6 +76,26 @@ static int session_home(AppSession* s) {
     close(fd);return bad?-1:0;
 }
 #include "session-binder-filter.h"
+/* Hand this session's SysV IPC listener (see session_filter_sysvipc) to the
+ * per-app supervisor in the stub (linux/dbus-broker/sysvipc-host.c). Without
+ * it SysV calls keep failing with ENOSYS; the launch itself goes on. */
+static void session_sysvipc_handover(AppSession* s) {
+    int listener=session_filter_sysvipc();
+    if(listener<0)return;
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    snprintf(address.sun_path,sizeof(address.sun_path),"/data/matonos/linux/tmp/%u/bus-sysvipc",s->uid);
+    int sock=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);
+    char byte=0;struct iovec io={&byte,1};
+    union {struct cmsghdr align;char bytes[CMSG_SPACE(sizeof(int))];} control={0};
+    struct msghdr msg={.msg_iov=&io,.msg_iovlen=1,.msg_control=control.bytes,.msg_controllen=sizeof(control.bytes)};
+    struct cmsghdr* rights=CMSG_FIRSTHDR(&msg);
+    rights->cmsg_level=SOL_SOCKET;rights->cmsg_type=SCM_RIGHTS;rights->cmsg_len=CMSG_LEN(sizeof(int));
+    memcpy(CMSG_DATA(rights),&listener,sizeof(listener));
+    if(sock<0||connect(sock,(struct sockaddr*)&address,sizeof(address))||sendmsg(sock,&msg,MSG_NOSIGNAL)!=1)
+        fprintf(stderr,"matonos-flatpak: SysV IPC supervisor unavailable: %s\n",strerror(errno));
+    if(sock>=0)close(sock);
+    close(listener);
+}
 static int session_enter(AppSession* s) {
     int fd=openat(s->group,"cgroup.procs",O_WRONLY|O_CLOEXEC|O_NOFOLLOW);
     if(fd<0)return -1;
@@ -86,7 +111,9 @@ static int session_enter(AppSession* s) {
     if(fd<0)return -1;
     ok=write(fd,s->label,strlen(s->label))==(ssize_t)strlen(s->label);close(fd);
     if(!ok)return -1;
-    return session_filter_binder();
+    if(session_filter_binder())return -1;
+    session_sysvipc_handover(s);
+    return 0;
 }
 static int session_has_payload(AppSession* s) {
     int fd=openat(s->group,"cgroup.procs",O_RDONLY|O_CLOEXEC|O_NOFOLLOW);

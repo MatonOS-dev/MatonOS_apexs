@@ -9,6 +9,7 @@
 #include <linux/seccomp.h>
 #include <sys/prctl.h>
 #include <sys/syscall.h>
+#include <unistd.h>
 
 /* Per host architecture: the native ABI, its 32-bit compat ABI (Flatpak
  * multiarch, e.g. Steam/Wine on x86), and the compat ioctl number, which the
@@ -68,5 +69,52 @@ static int session_filter_binder(void) {
     };
     struct sock_fprog prog={.len=sizeof(code)/sizeof(code[0]),.filter=code};
     return prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0) || prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&prog);
+}
+
+/* SysV IPC (sem*, shm*, msg*): MatonOS kernels keep Android's
+ * CONFIG_SYSVIPC off, so these calls go to the app's per-app supervisor in
+ * its stub (linux/sysvipc) through a seccomp user-notification listener.
+ * Returns the listener fd (O_CLOEXEC), or -1 when this architecture has no
+ * emulation yet; the calls then fail with ENOSYS as before. Install after
+ * session_filter_binder (which sets no_new_privs and kills x32). */
+#if defined(__x86_64__)
+static const unsigned maton_sysvipc_native_nr[]={29,30,31,64,65,66,67,68,69,70,71,220};
+/* ipc(2) multiplexer plus the direct i386 calls; no direct semop exists. */
+static const unsigned maton_sysvipc_compat_nr[]={117,393,394,395,396,397,398,399,400,401,402,420};
+#define MATON_SYSVIPC_EMULATED 1
+#else
+/* arm64/riscv64 use the generic table; linux/sysvipc decodes x86 only. */
+#define MATON_SYSVIPC_EMULATED 0
+#endif
+
+static int session_filter_sysvipc(void) {
+#if MATON_SYSVIPC_EMULATED
+    enum { NATIVE_N=sizeof(maton_sysvipc_native_nr)/sizeof(maton_sysvipc_native_nr[0]),
+           COMPAT_N=sizeof(maton_sysvipc_compat_nr)/sizeof(maton_sysvipc_compat_nr[0]),
+           LEN=3+1+NATIVE_N+1+3+COMPAT_N+1+2 };
+    struct sock_filter code[LEN];
+    unsigned n=0,to_compat,allow_jumps[2],notify_jumps[NATIVE_N+COMPAT_N],notifies=0;
+    code[n++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,arch));
+    code[n++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,MATON_NATIVE_ARCH,1,0);
+    to_compat=n;code[n++]=(struct sock_filter)BPF_STMT(BPF_JMP|BPF_JA,0);
+    code[n++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr));
+    for(unsigned i=0;i<NATIVE_N;i++){notify_jumps[notifies++]=n;code[n++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,maton_sysvipc_native_nr[i],0,0);}
+    allow_jumps[0]=n;code[n++]=(struct sock_filter)BPF_STMT(BPF_JMP|BPF_JA,0);
+    code[to_compat].k=n-to_compat-1;
+    code[n++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,arch));
+    code[n++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,MATON_COMPAT_ARCH,1,0);
+    allow_jumps[1]=n;code[n++]=(struct sock_filter)BPF_STMT(BPF_JMP|BPF_JA,0);
+    code[n++]=(struct sock_filter)BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr));
+    for(unsigned i=0;i<COMPAT_N;i++){notify_jumps[notifies++]=n;code[n++]=(struct sock_filter)BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,maton_sysvipc_compat_nr[i],0,0);}
+    unsigned allow=n;code[n++]=(struct sock_filter)BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW);
+    unsigned notify=n;code[n++]=(struct sock_filter)BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_USER_NOTIF);
+    /* The compat block's last JEQ falls through to ALLOW, which follows it. */
+    for(unsigned i=0;i<2;i++)code[allow_jumps[i]].k=allow-allow_jumps[i]-1;
+    for(unsigned i=0;i<notifies;i++)code[notify_jumps[i]].jt=(unsigned char)(notify-notify_jumps[i]-1);
+    struct sock_fprog prog={.len=(unsigned short)n,.filter=code};
+    return (int)syscall(SYS_seccomp,SECCOMP_SET_MODE_FILTER,SECCOMP_FILTER_FLAG_NEW_LISTENER,&prog);
+#else
+    return -1;
+#endif
 }
 #endif
