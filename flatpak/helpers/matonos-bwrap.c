@@ -222,6 +222,52 @@ static char* args_fd_lookup(int fd, const char* wanted) {
     return found;
 }
 
+/* Replace Flatpak's generated identity files rather than mounting over its
+ * already-mounted, unlinked temporary inodes (which mount rejects with ENOENT).
+ * Keep all other bundled options, including the seccomp descriptors. */
+static int replace_config_args(int fd) {
+    struct stat st;
+    if(fstat(fd,&st)||st.st_size<=0||st.st_size>1048576)return -1;
+    size_t size=(size_t)st.st_size;
+    char* data=malloc(size);
+    if(!data)return -1;
+    size_t read_size=0;
+    while(read_size<size) {
+        ssize_t n=pread(fd,data+read_size,size-read_size,(off_t)read_size);
+        if(n<0&&errno==EINTR)continue;
+        if(n<=0){free(data);return -1;}read_size+=(size_t)n;
+    }
+    if(data[size-1]){free(data);return -1;}
+    int output=(int)syscall(SYS_memfd_create,"matonos-bwrap-args",0);
+    if(output<0){free(data);return -1;}
+    char* end=data+size;
+    for(char* p=data;p<end;) {
+        char* after=p;
+        int values=option_values(p);
+        for(int i=0;i<=values;i++) {
+            char* nul=memchr(after,0,(size_t)(end-after));
+            if(!nul){close(output);free(data);return -1;}
+            after=nul+1;
+        }
+        int skip=0;
+        if(values==2 && (!strcmp(p,"--file")||!strcmp(p,"--bind-data")||
+                !strcmp(p,"--ro-bind-data")||!strcmp(p,"--symlink")||
+                !strcmp(p,"--bind")||!strcmp(p,"--ro-bind"))) {
+            char* target=next_string(next_string(p,end),end);
+            skip=!strcmp(target,"/etc/passwd")||!strcmp(target,"/etc/group")||
+                !strcmp(target,"/etc/resolv.conf")||!strcmp(target,"/etc/machine-id")||
+                !strcmp(target,"/var/lib/dbus/machine-id");
+        }
+        if(!skip && write(output,p,(size_t)(after-p))!=after-p) {
+            close(output);free(data);return -1;
+        }
+        p=after;
+    }
+    free(data);
+    int rc=lseek(output,0,SEEK_SET)<0||dup2(output,fd)<0;
+    close(output);return rc?-1:0;
+}
+
 /* Prepend one argument at index at. */
 static char** prepend_argument(char** argv, int count, int at, const char* value) {
     char** out=calloc((size_t)count+2,sizeof(char*));
@@ -328,7 +374,7 @@ int main(int argc, char** argv) {
     if(!journal_path || !*journal_path)journal_path=bundled_journal;
     if(args_end>=0)pad_nodes=args_fd_lookup(atoi(argv[args_end-1]),"MATON_SESSION_PAD_NODES");
     if(!pad_nodes && getenv("MATON_SESSION_PAD_NODES"))pad_nodes=strdup(getenv("MATON_SESSION_PAD_NODES"));
-    extra = calloc(96 + 3 * 4, sizeof(char*));
+    extra = calloc(96 + 3 * 8, sizeof(char*));
     if (!extra) return 127;
     if(app_sandbox && pad_nodes && *pad_nodes) {
         char* state;unsigned pads=0;
@@ -353,13 +399,18 @@ int main(int argc, char** argv) {
         extra[count++]="--bind";extra[count++]=(char*)journal_path;extra[count++]=JOURNAL_SOCKET_PATH;
     }
     /* The launcher generated these four host-config files for this process.
-     * The app root sees only this minimal identity/network configuration and
-     * the Conscrypt trust store, never Android's general /etc tree. */
+     * The app root sees only this minimal identity/network configuration.
+     * Its Linux runtime supplies certificates and /var/tmp. */
     const char* config=getenv("MATON_FLATPAK_CONFIG_DIR");
+    if(!config && args_end>=0)config=args_fd_lookup(atoi(argv[args_end-1]),"MATON_FLATPAK_CONFIG_DIR");
+    static const char config_prefix[]="/data/matonos/linux/run/flatpak-config-";
     char* config_end=NULL;
-    long config_pid=config && !strncmp(config,"/data/matonos/linux/runtime/flatpak-config-",43) ?
-        strtol(config+43,&config_end,10) : 0;
+    long config_pid=config && !strncmp(config,config_prefix,sizeof(config_prefix)-1) ?
+        strtol(config+sizeof(config_prefix)-1,&config_end,10) : 0;
     if(app_sandbox && config_pid>0 && config_end && !strcmp(config_end,"-monitor")) {
+        if(args_end>=0 && replace_config_args(atoi(argv[args_end-1]))) {
+            perror("matonos-bwrap: replace generated configuration");return 127;
+        }
         static char passwd[256],group[256],resolv[256];
         snprintf(passwd,sizeof(passwd),"%s/passwd",config);
         snprintf(group,sizeof(group),"%s/group",config);
@@ -367,8 +418,6 @@ int main(int argc, char** argv) {
         extra[count++]="--ro-bind";extra[count++]=passwd;extra[count++]="/etc/passwd";
         extra[count++]="--ro-bind";extra[count++]=group;extra[count++]="/etc/group";
         extra[count++]="--ro-bind";extra[count++]=resolv;extra[count++]="/etc/resolv.conf";
-        extra[count++]="--symlink";extra[count++]="/apex/com.android.conscrypt/cacerts";extra[count++]="/etc/ssl/certs";
-        extra[count++]="--symlink";extra[count++]="/tmp";extra[count++]="/var/tmp";
     }
     /* flatpak-run.c only uses the host ID if /etc or /var has one.
      * Android has neither. Override both paths after Flatpak mounts /var. */
@@ -390,14 +439,23 @@ int main(int argc, char** argv) {
      * calls it as the command; it setcon()s to the app domain and execs the
      * verified payload. */
     if(app_sandbox && app_label) {
-        const char* data=getenv("MATON_APP_DATA_DIR");
+        const char* data=getenv("MATON_APP_HOME_DIR");
+        if(!data && args_end>=0)data=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_HOME_DIR");
         unsigned uid=0;char trailing;
-        if(!data || sscanf(data,"/data/matonos/linux/apps/%u%c",&uid,&trailing)!=1 ||
-           uid%100000<10000 || uid%100000>19999) return 125;
+        if(!data || sscanf(data,"/data/matonos/linux/home/%u%c",&uid,&trailing)!=1 ||
+           uid%100000<10000 || uid%100000>19999) {
+            fprintf(stderr,"matonos-bwrap: invalid app home in launch arguments\n");return 125;
+        }
         static char home[192];
-        snprintf(home,sizeof(home),"%s/home",data);
+        snprintf(home,sizeof(home),"%s",data);
         extra[count++]="--bind";extra[count++]=home;extra[count++]=home;
         extra[count++]="--setenv";extra[count++]="HOME";extra[count++]=home;
+        /* The app's runtime dir (Wayland socket + session bus) is fixed at
+         * /data/matonos/linux/tmp/<uid>; expose it at the same path. */
+        static char runtime_dir[64];
+        snprintf(runtime_dir,sizeof(runtime_dir),"/data/matonos/linux/tmp/%u",uid);
+        extra[count++]="--bind";extra[count++]=runtime_dir;extra[count++]=runtime_dir;
+        extra[count++]="--setenv";extra[count++]="XDG_RUNTIME_DIR";extra[count++]=runtime_dir;
         extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
         extra[count++]="--setenv";extra[count++]=APP_LABEL_ENV;extra[count++]=app_label;
     }

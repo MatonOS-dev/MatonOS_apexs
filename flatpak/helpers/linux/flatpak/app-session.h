@@ -17,95 +17,60 @@
 
 typedef struct AppSession {
     unsigned uid;
-    int pid, controllers, lifeline, group;
+    int pid, controllers, lifeline, group, portal;
     char home[128], data_dir[128], label[256], id[256], app_label[256];
 } AppSession;
 
-static int session_text(const char* path,char* text,size_t size) {
-    int fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
-    if(fd<0)return -1;
-    ssize_t got=read(fd,text,size-1);close(fd);
-    if(got<=0 || (size_t)got==size-1)return -1;
-    text[got]=0;return (int)got;
-}
 static int session_owner(AppSession* s,int initial) {
     memset(s,0,sizeof(*s));s->lifeline=-1;s->group=-1;
-    /* Portals now run in the compositor, so there is no native portal-spawned
-     * nested launch; every authenticated request is the initial linuxd launch. */
+    /* Only the initial authenticated linuxd launch uses this privileged
+     * entry. Stock portal children use the unprivileged applet instead. */
     if(!initial || getuid()!=1000){errno=EPERM;return -1;}
     char owner[384]={0},extra;
     {
         const char* value=getenv("MATON_APP_OWNER");
-        if(!value || !getenv("MATON_APP_LIFELINE") || strcmp(getenv("MATON_APP_LIFELINE"),"196"))return -1;
+        if(!value || !getenv("MATON_APP_LIFELINE") || strcmp(getenv("MATON_APP_LIFELINE"),"196")){errno=EPERM;return -1;}
         snprintf(owner,sizeof(owner),"%s",value);s->lifeline=196;
-        struct stat st;if(fstat(196,&st)||!S_ISFIFO(st.st_mode))return -1;
+        struct stat st;if(fstat(196,&st))return -1;
+        if(!S_ISFIFO(st.st_mode)){errno=EPERM;return -1;}
         if(fcntl(196,F_SETFD,FD_CLOEXEC))return -1;
     }
     if(sscanf(owner,"%u:%d:%d:%255[A-Za-z0-9._-]%c",&s->uid,&s->pid,&s->controllers,s->id,&extra)!=4 ||
-       s->uid%100000<10000 || s->uid%100000>=20000 || s->pid<=0 || (s->controllers!=0 && s->controllers!=1))return -1;
-    if(getuid()!=1000 && getuid()!=s->uid)return -1;
-    char path[128],text[4096];struct stat st;
-    snprintf(path,sizeof(path),"/proc/%d",s->pid);
-    if(stat(path,&st)||st.st_uid!=s->uid)return -1;
-    snprintf(path,sizeof(path),"/proc/%d/attr/current",s->pid);
-    if(session_text(path,text,sizeof(text))<0)return -1;
-    char* range=strstr(text,":s0");if(!range)return -1;
-    range[strcspn(range,"\n")]=0;
-    /* Derive the MLS level from the verified UID, never from a caller-supplied
-     * string: it must equal the level Android itself assigned the live stub
-     * (seapp_contexts levelFrom=all). A mismatch fails closed. */
+       s->uid%100000<10000 || s->uid%100000>=20000 || s->pid<=0 || (s->controllers!=0 && s->controllers!=1)){errno=EPERM;return -1;}
+    /* linuxd constructs this environment only after the system bridge
+     * authenticates the signed stub's UID and installed Flatpak ref. The
+     * lifeline and pinned cgroup descriptors are capabilities. Android may
+     * reap the short-lived stub before this wrapper runs, so identity and
+     * cgroup setup must not depend on /proc/<pid>. */
     char level[64];
-    if(maton_mls_level_from_uid(s->uid,level,sizeof(level)) || strcmp(range+1,level))return -1;
+    if(maton_mls_level_from_uid(s->uid,level,sizeof(level))){errno=EPERM;return -1;}
     /* The dyntransition target is the narrow flatpak-run domain; the verified
      * payload is moved to the app domain later by matonos-app-exec. */
     snprintf(s->app_label,sizeof(s->app_label),"u:r:matonos_linux_app:%s",level);
     snprintf(s->label,sizeof(s->label),"u:r:matonos_flatpak_run:%s",level);
-    snprintf(path,sizeof(path),"/sys/fs/cgroup/apps/uid_%u/pid_%d",s->uid,s->pid);
-    s->group=open(path,O_DIRECTORY|O_CLOEXEC|O_NOFOLLOW);
-    if(s->group<0)return -1;
-    /* Pin the existing Android cgroup inode; never create a replacement.
-     * Membership plus proc owner ties this request to the live stub. */
-    snprintf(path,sizeof(path),"/proc/%d/cgroup",s->pid);
-    if(session_text(path,text,sizeof(text))<0)return -1;
-    char expected[128];snprintf(expected,sizeof(expected),"0::/apps/uid_%u/pid_%d\n",s->uid,s->pid);
-    if(!strstr(text,expected))return -1;
-    if(initial){struct pollfd life={.fd=s->lifeline,.events=POLLIN};if(poll(&life,1,0)!=0)return -1;}
-    snprintf(s->data_dir,sizeof(s->data_dir),"/data/matonos/linux/apps/%u",s->uid);
-    snprintf(s->home,sizeof(s->home),"%s/home",s->data_dir);
+    s->group=198;
+    struct stat group_info;
+    if(fstat(s->group,&group_info))return -1;
+    if(!S_ISDIR(group_info.st_mode)){errno=EPERM;return -1;}
+    if(fcntl(s->group,F_SETFD,FD_CLOEXEC))return -1;
+    /* linuxd opened the kernel-created cgroup named by the authenticated
+     * Binder UID/PID before spawning us. This descriptor pins that exact
+     * group across stub exit; never reopen a PID-derived path here. */
+    if(initial){struct pollfd life={.fd=s->lifeline,.events=POLLIN};if(poll(&life,1,0)!=0){errno=EPERM;return -1;}}
+    snprintf(s->data_dir,sizeof(s->data_dir),"/data/matonos/linux/install/%u",s->uid);
+    snprintf(s->home,sizeof(s->home),"/data/matonos/linux/home/%u",s->uid);
     return 0;
 }
 static int session_home(AppSession* s) {
-    const char* paths[]={s->data_dir,s->home};
-    for(unsigned i=0;i<2;i++) {
-        int fd=open(paths[i],O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
-        struct stat st;
-        if(fd<0)return -1;
-        int bad=fstat(fd,&st)||st.st_uid!=s->uid||(st.st_mode&0777)!=0700;
-        close(fd);if(bad)return -1;
-    }
-    return 0;
+    /* Only the app home is UID-owned; the --user install root (data_dir) is
+     * system-owned, so it must not be checked here. */
+    int fd=open(s->home,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    struct stat st;
+    if(fd<0)return -1;
+    int bad=fstat(fd,&st)||st.st_uid!=s->uid||(st.st_mode&0777)!=0700;
+    close(fd);return bad?-1:0;
 }
-static int session_filter_binder(void) {
-    /* Flatpak/bwrap use no Android Binder. Reject all 'b' ioctls, including
-     * compat commands, before any untrusted metadata or payload is parsed.
-     * Filters and NNP survive exec/fork and cannot be relaxed by userns root. */
-    struct sock_filter code[]={
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,arch)),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,AUDIT_ARCH_X86_64,1,0),
-        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_KILL_PROCESS),
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,nr)),
-        BPF_JUMP(BPF_JMP|BPF_JSET|BPF_K,0x40000000,0,1),
-        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_KILL_PROCESS),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,SYS_ioctl,0,4),
-        BPF_STMT(BPF_LD|BPF_W|BPF_ABS,offsetof(struct seccomp_data,args[1])),
-        BPF_STMT(BPF_ALU|BPF_AND|BPF_K,0xff00),
-        BPF_JUMP(BPF_JMP|BPF_JEQ|BPF_K,0x6200,0,1),
-        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ERRNO|EPERM),
-        BPF_STMT(BPF_RET|BPF_K,SECCOMP_RET_ALLOW),
-    };
-    struct sock_fprog prog={.len=sizeof(code)/sizeof(code[0]),.filter=code};
-    return prctl(PR_SET_NO_NEW_PRIVS,1,0,0,0) || prctl(PR_SET_SECCOMP,SECCOMP_MODE_FILTER,&prog);
-}
+#include "session-binder-filter.h"
 static int session_enter(AppSession* s) {
     int fd=openat(s->group,"cgroup.procs",O_WRONLY|O_CLOEXEC|O_NOFOLLOW);
     if(fd<0)return -1;
@@ -128,7 +93,7 @@ static int session_has_payload(AppSession* s) {
     if(fd<0)return 0;
     FILE* file=fdopen(fd,"r");if(!file){close(fd);return 0;}
     int pid,alive=0;
-    while(fscanf(file,"%d",&pid)==1)if(pid!=s->pid){alive=1;break;}
+    while(fscanf(file,"%d",&pid)==1)if(pid!=s->pid && pid!=s->portal){alive=1;break;}
     fclose(file);return alive;
 }
 static void session_kill(AppSession* s) {

@@ -42,7 +42,7 @@ static int stage_args_valid(int argc, char** argv) {
     char* end = NULL; long uid = strtol(argv[3], &end, 10);
     char expected[PATH_MAX];
     if (!end || *end || uid < 10000 || uid % 100000 < 10000 || uid % 100000 > 19999 ||
-            snprintf(expected, sizeof(expected), "/data/matonos/linux/apps/%ld/staging/", uid) >= (int)sizeof(expected) ||
+            snprintf(expected, sizeof(expected), "/data/matonos/linux/install/%ld/staging/", uid) >= (int)sizeof(expected) ||
             strncmp(argv[2], expected, strlen(expected)) || !argv[2][strlen(expected)] ||
             strchr(argv[2] + strlen(expected), '/')) return 0;
     struct stat st;
@@ -56,7 +56,11 @@ static int stage_flatpak_ref(int argc, char** argv) {
     if (!stage_args_valid(argc, argv))
         return fail("stage needs the per-installer staging directory, UID, remote and ref");
     uid_t uid = (uid_t)strtoul(argv[3], NULL, 10);
-    if (setgroups(0, NULL) || setresgid(uid, uid, uid) || setresuid(uid, uid, uid))
+    /* Keep only inet: netd's DNS socket (/dev/socket/dnsproxyd) is root:inet.
+     * Apps get this group from INTERNET; linuxd only stages for verified
+     * generated stubs, which all declare INTERNET. */
+    const gid_t inet = 3003;  /* AID_INET */
+    if (setgroups(1, &inet) || setresgid(uid, uid, uid) || setresuid(uid, uid, uid))
         return fail("cannot enter installer UID: %s", strerror(errno));
     if (setenv("MATON_FLATPAK_STAGING_DIR", argv[2], 1))
         return fail("cannot select staging installation: %s", strerror(errno));

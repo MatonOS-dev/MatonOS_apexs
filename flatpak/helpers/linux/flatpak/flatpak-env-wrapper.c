@@ -27,9 +27,9 @@
 #include <sys/un.h>
 #include "machine-id.h"
 #include "app-session.h"
+#include "../dbus-broker/session-control.h"
 #include <stddef.h>
 
-#define SESSION_BUS_DIRECTORY "/data/matonos/linux/runtime/session-bus-%d"
 /* r24: the whole Flatpak stack ships in the com.matonos.flatpak APEX, mounted
  * at /apex/com.matonos.flatpak, instead of /system_ext. The binaries find
  * their own libraries through the APEX linker namespace, so no
@@ -53,9 +53,14 @@ static int install_directory_uid(const char* path, unsigned* result) {
     unsigned uid = 0;
     char trailing;
     char expected[128];
-    if (!path || sscanf(path, "/data/matonos/linux/apps/%u%c", &uid, &trailing) != 1 ||
-            uid % 100000 < 10000 || uid % 100000 > 19999) return 0;
-    snprintf(expected, sizeof(expected), "/data/matonos/linux/apps/%u", uid);
+    if (!path) return 0;
+    if (sscanf(path, "/data/matonos/linux/install/%u%c", &uid, &trailing) == 1)
+        snprintf(expected, sizeof(expected), "/data/matonos/linux/install/%u", uid);
+    else if (sscanf(path, "/data/matonos/linux/runtime/%u%c", &uid, &trailing) == 1)
+        snprintf(expected, sizeof(expected), "/data/matonos/linux/runtime/%u", uid);
+    else
+        return 0;
+    if (uid % 100000 < 10000 || uid % 100000 > 19999) return 0;
     if (strcmp(path, expected)) return 0;
     *result = uid;
     return 1;
@@ -66,6 +71,21 @@ static int monitor_file(int directory, const char* name, const char* text) {
     if(fd<0)return -1;
     size_t size=strlen(text);ssize_t written=write(fd,text,size);close(fd);
     return written==(ssize_t)size ? 0 : -1;
+}
+static int grant_monitor_read(const char* path, unsigned uid) {
+    int directory=open(path,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+    if(directory<0)return -1;
+    static const char* files[]={"resolv.conf","hosts","host.conf","gai.conf","passwd","group"};
+    int rc=0;
+    for(unsigned i=0;i<sizeof(files)/sizeof(files[0]);i++) {
+        int fd=openat(directory,files[i],O_RDONLY|O_NOFOLLOW|O_CLOEXEC);
+        if(fd<0){rc=-1;break;}
+        if(fchown(fd,1000,uid)||fchmod(fd,0640))rc=-1;
+        close(fd);if(rc)break;
+    }
+    /* Keep system ownership and grant only the verified app read access. */
+    if(!rc && (fchown(directory,1000,uid)||fchmod(directory,0750)))rc=-1;
+    close(directory);return rc;
 }
 static int prepare_monitor(const char* display, const char* dns, char* path, size_t size) {
     snprintf(path,size,"%s-monitor",display);
@@ -115,11 +135,9 @@ static int start_journal_sink(const char* display, char* path, size_t size) {
     if(sink<0){close(fd);unlink(path);return -1;}
     if(sink>0){close(fd);return 0;}
     close(196);
-    if(prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(0);
-    const char* directory=getenv("MATON_SESSION_DIRECTORY_FD");
-    if(directory)close(atoi(directory));
-    const char* x11_directory=getenv("MATON_SESSION_X11_FD");
-    if(x11_directory)close(atoi(x11_directory));
+    if(/* UID changes make /proc ownership root until dumpability is reset.
+                 * The private broker must inspect this same-UID child before exec. */
+                prctl(PR_SET_DUMPABLE,1)||prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent)_exit(0);
     static char message[65536];
     for(;;) {
         ssize_t got=recv(fd,message,sizeof(message)-1,0);
@@ -153,13 +171,98 @@ int main(int argc, char** argv) {
     return 127;
 }
 #else
+static int system_flatpak_version(char* version,size_t size) {
+    int output[2];
+    if(pipe2(output,O_CLOEXEC))return -1;
+    pid_t child=fork();
+    if(child<0){close(output[0]);close(output[1]);return -1;}
+    if(!child) {
+        if(dup2(output[1],STDOUT_FILENO)<0)_exit(127);
+        close(output[0]);close(output[1]);
+        char* args[]={"flatpak","--version",NULL};
+        execv(MATON_FLATPAK_BIN "/matonos-flatpak",args);_exit(127);
+    }
+    close(output[1]);char text[128]={0};size_t used=0;
+    while(used<sizeof(text)-1) {
+        ssize_t got=read(output[0],text+used,sizeof(text)-1-used);
+        if(got<0&&errno==EINTR)continue;
+        if(got<=0)break;used+=(size_t)got;
+    }
+    close(output[0]);int status=0;
+    while(waitpid(child,&status,0)<0&&errno==EINTR){}
+    char value[64]={0};
+    if(!WIFEXITED(status)||WEXITSTATUS(status)||sscanf(text,"Flatpak %63[0-9.]",value)!=1||strlen(value)>=size)return -1;
+    strcpy(version,value);return 0;
+}
+/* The portal is an ordinary Android ELF at this app's UID and MLS level.
+ * The system supervisor pins its identity on the app's private bus before
+ * releasing exec, so only this child can claim the Flatpak portal name. */
+static int start_app_portal(AppSession* app,const char* monitor,int* control) {
+    int ready[2]={-1,-1},gate[2]={-1,-1},socket_fd=-1;
+    pid_t portal=-1;
+    struct MatonSessionRegistration registration={0};
+    if(system_flatpak_version(registration.flatpak_version,sizeof(registration.flatpak_version))) {
+        fprintf(stderr,"matonos-flatpak: cannot query system Flatpak version\n");return -1;
+    }
+    const char* stage="create startup pipes";
+    if(pipe2(ready,O_CLOEXEC)||pipe2(gate,O_CLOEXEC))goto fail;
+    pid_t parent=getpid();portal=fork();
+    if(portal<0)goto fail;
+    if(!portal) {
+        close(ready[0]);close(gate[1]);close(app->lifeline);
+        snprintf(app->label,sizeof(app->label),"%s",app->app_label);
+        if(session_enter(app)||session_home(app)||
+                /* UID changes make /proc ownership root until dumpability is reset.
+                 * The private broker must inspect this same-UID child before exec. */
+                prctl(PR_SET_DUMPABLE,1)||prctl(PR_SET_PDEATHSIG,SIGTERM)||getppid()!=parent) {perror("matonos-flatpak: portal identity setup");_exit(127);}
+        if(setenv("FLATPAK",MATON_FLATPAK_BIN "/matonos-app-flatpak",1)||
+                setenv("FLATPAK_BWRAP",MATON_FLATPAK_BIN "/matonos-app-bwrap",1)||
+                setenv("MATON_APP_LABEL",app->app_label,1))_exit(127);
+        unsetenv("MATON_APP_OWNER");unsetenv("MATON_APP_UID");
+        char byte=1;
+        if(write(ready[1],&byte,1)!=1)_exit(127);
+        close(ready[1]);
+        if(read(gate[0],&byte,1)!=1||byte!=1)_exit(127);
+        close(gate[0]);
+        char* args[]={"flatpak-portal","--no-idle-exit",NULL};
+        execv(MATON_FLATPAK_BIN "/matonos-flatpak-portal",args);
+        perror("matonos-flatpak: stock portal exec");_exit(127);
+    }
+    close(ready[1]);ready[1]=-1;close(gate[0]);gate[0]=-1;
+    stage="wait for child identity";
+    struct pollfd waiting={.fd=ready[0],.events=POLLIN};char byte=0;
+    if(poll(&waiting,1,5000)<=0||read(ready[0],&byte,1)!=1||byte!=1)goto fail;
+    close(ready[0]);ready[0]=-1;
+    struct sockaddr_un address={.sun_family=AF_UNIX};
+    snprintf(address.sun_path,sizeof(address.sun_path),"/data/matonos/linux/tmp/%u/bus-control",app->uid);
+    stage="connect private bus control";
+    socket_fd=socket(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC,0);
+    if(socket_fd<0||connect(socket_fd,(struct sockaddr*)&address,sizeof(address)))goto fail;
+    stage="register portal PID";
+    registration.pid=portal;snprintf(registration.monitor,sizeof(registration.monitor),"%s",monitor);
+    if(send(socket_fd,&registration,sizeof(registration),MSG_NOSIGNAL)!=sizeof(registration))goto fail;
+    struct MatonSessionReply response={0};waiting.fd=socket_fd;
+    if(poll(&waiting,1,5000)<=0||recv(socket_fd,&response,sizeof(response),MSG_TRUNC)!=sizeof(response)||response.status)goto fail;
+    stage="release portal exec";
+    byte=1;if(write(gate[1],&byte,1)!=1)goto fail;
+    close(gate[1]);gate[1]=-1;
+    stage="wait for portal bus ownership";
+    if(poll(&waiting,1,10000)<=0||recv(socket_fd,&byte,1,0)!=1||byte!=1)goto fail;
+    app->portal=portal;*control=socket_fd;return 0;
+fail:
+    fprintf(stderr,"matonos-flatpak: portal startup failed at %s: %s\n",stage,strerror(errno));
+    if(portal>0){kill(portal,SIGTERM);while(waitpid(portal,NULL,0)<0&&errno==EINTR){}}
+    for(int i=0;i<2;i++){if(ready[i]>=0)close(ready[i]);if(gate[i]>=0)close(gate[i]);}
+    if(socket_fd>=0)close(socket_fd);
+    return -1;
+}
 /* Staging runs as the installing app's UID in its own operation directory:
- * /data/matonos/linux/apps/<euid>/staging/<operation>, owned by that UID. */
+ * /data/matonos/linux/install/<euid>/staging/<operation>, owned by that UID. */
 static int installer_staging_valid(const char* path) {
     char prefix[96];
     uid_t uid=geteuid();
     if(uid<10000 || uid%100000<10000 || uid%100000>19999)return 0;
-    int n=snprintf(prefix,sizeof(prefix),"/data/matonos/linux/apps/%u/staging/",(unsigned)uid);
+    int n=snprintf(prefix,sizeof(prefix),"/data/matonos/linux/install/%u/staging/",(unsigned)uid);
     if(n<0 || n>=(int)sizeof(prefix) || strncmp(path,prefix,(size_t)n))return 0;
     const char* op=path+n;
     size_t len=strlen(op);
@@ -185,8 +288,8 @@ int main(int argc, char** argv) {
     for(int i=1;i<argc;i++)if(!strcmp(argv[i],"run")){is_run=1;break;}
     AppSession app={.lifeline=-1,.group=-1};
     int owned=is_run;
-    int initial=getenv("MATON_SESSION_DIRECTORY_FD")!=NULL;
-    if(owned && (session_owner(&app,initial) || session_home(&app))) {
+    int initial=owned;
+    if(owned && session_owner(&app,initial)) {
         perror("matonos-flatpak: unverified app owner");return 127;
     }
     if(owned){char uid[32];snprintf(uid,sizeof(uid),"%u",app.uid);if(setenv("MATON_APP_UID",uid,1))return 127;}
@@ -209,7 +312,6 @@ int main(int argc, char** argv) {
         snprintf(flatpak_user_dir,sizeof(flatpak_user_dir),"%s",
                 supplied_user_dir ? supplied_user_dir : "/data/matonos/linux/flatpak-user");
     }
-    const char* display = getenv("WAYLAND_DISPLAY");
     const char* bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
     if(!installer_mode) {
         char machine_reason[256];
@@ -219,64 +321,48 @@ int main(int argc, char** argv) {
             return 127;
         }
     }
-    int display_fd = -1; char trailing; char display_copy[128] = {0};
+    char display_copy[128] = {0};
     char static_base[192],static_config[192]={0};
-    snprintf(static_base,sizeof(static_base),"/data/matonos/linux/runtime/flatpak-config-%d",getpid());
+    snprintf(static_base,sizeof(static_base),"/data/matonos/linux/run/flatpak-config-%d",getpid());
     const char* supplied_dns=getenv("MATON_FLATPAK_DNS");
     if(!installer_mode && prepare_monitor(static_base,supplied_dns,static_config,sizeof(static_config))) {
         fprintf(stderr,"matonos-flatpak: cannot prepare static namespace configuration\n");return 127;
     }
+    if(owned && grant_monitor_read(static_config,app.uid)) {
+        perror("matonos-flatpak: grant app configuration access");return 127;
+    }
     char x11_socket[160] = {0};
-    int graphical = display && sscanf(display, "/data/matonos/linux/runtime/wayland-%d%c", &display_fd, &trailing) == 1 && display_fd >= 0;
-    int nested=0, owner=0;
-    if(!graphical && display && sscanf(display,SESSION_BUS_DIRECTORY "/wayland-0%c",&owner,&trailing)==1 && owner>0) {
-        char expected[192];snprintf(expected,sizeof(expected),"unix:path=" SESSION_BUS_DIRECTORY "/bus",owner);
-        nested=getenv("DBUS_SESSION_BUS_ADDRESS") && !strcmp(getenv("DBUS_SESSION_BUS_ADDRESS"),expected);
-        snprintf(expected,sizeof(expected),SESSION_BUS_DIRECTORY "/wayland-0",owner);
-        nested=nested && !strcmp(display,expected);
-        graphical=nested;
-    }
-    if (graphical) snprintf(display_copy, sizeof(display_copy), "%s", display);
+    /* The app session is fixed: /data/matonos/linux/tmp/<uid>, Wayland socket
+     * "wayland-0" and the session bus at "bus". Nothing is handed in. */
+    int graphical = owned;
+    if (graphical) snprintf(display_copy, sizeof(display_copy), "%s", "wayland-0");
     if (graphical) {
-        // linuxd relays X11 on a sibling socket of the Wayland
-        // one; only then does the bwrap shim have a socket to bind.
         struct stat socket_info;
-        if(nested) {
-            const char* inherited=getenv("MATON_X11_SOCKET");
-            int pid;char extra;
-            if(inherited && sscanf(inherited,SESSION_BUS_DIRECTORY "/X0%c",&pid,&extra)==1 && pid==owner)
-                snprintf(x11_socket,sizeof(x11_socket),"%s",inherited);
-        } else snprintf(x11_socket, sizeof(x11_socket), "%s-x11", display_copy);
-        if (lstat(x11_socket, &socket_info) != 0 || !S_ISSOCK(socket_info.st_mode))
-            x11_socket[0] = '\0';
-        else
-            bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
+        char alias[160], target[64]={0}, canonical[64];
+        snprintf(alias,sizeof(alias),"/data/matonos/linux/tmp/%u/wayland-0-x11",app.uid);
+        ssize_t length=readlink(alias,target,sizeof(target)-1);
+        unsigned number=0;char trailing;
+        if(length>0) {
+            target[length]=0;
+            if(sscanf(target,"x11/X%u%c",&number,&trailing)==1) {
+                snprintf(canonical,sizeof(canonical),"x11/X%u",number);
+                if(!strcmp(target,canonical))
+                    snprintf(x11_socket,sizeof(x11_socket),"/data/matonos/linux/tmp/%u/%s",app.uid,target);
+            }
+        }
+        // Accept only the socket owned by this verified app, never a host path.
+        if(!x11_socket[0] || lstat(x11_socket,&socket_info) ||
+                !S_ISSOCK(socket_info.st_mode) || socket_info.st_uid!=app.uid)
+            x11_socket[0]=0;
     }
+
     char journal[160] = {0};
     if (graphical) {
         char journal_display[128];
-        snprintf(journal_display,sizeof(journal_display),"/data/matonos/linux/runtime/wayland-%d",getpid());
-        if (start_journal_sink(nested?journal_display:display_copy, journal, sizeof(journal)) == 0)
+        snprintf(journal_display,sizeof(journal_display),"/data/matonos/linux/tmp/%u/wayland-journal",app.uid);
+        if (start_journal_sink(journal_display, journal, sizeof(journal)) == 0)
             bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
         else journal[0] = '\0';
-    }
-    int session_directory=-1;
-    const char* directory=getenv("MATON_SESSION_DIRECTORY_FD");
-    if(directory) {
-        if(strcmp(directory,"198"))return 127;
-        session_directory=198;
-        if(fcntl(session_directory,F_SETFD,FD_CLOEXEC))return 127;
-    }
-    int x11_directory=-1;char x11_name[64]={0};
-    const char* x11_fd=getenv("MATON_SESSION_X11_FD");
-    const char* x11_file=getenv("MATON_SESSION_X11_NAME");
-    if(x11_fd) {
-        int number;char extra;
-        if(session_directory<0 || strcmp(x11_fd,"199") || !x11_file ||
-           sscanf(x11_file,"X%d%c",&number,&extra)!=1 || number<0)return 127;
-        x11_directory=199;
-        if(fcntl(x11_directory,F_SETFD,FD_CLOEXEC))return 127;
-        snprintf(x11_name,sizeof(x11_name),"%s",x11_file);
     }
     char pads[320];
     const char *pad_list=getenv("MATON_SESSION_PAD_NODES");
@@ -284,10 +370,11 @@ int main(int argc, char** argv) {
     snprintf(pads,sizeof(pads),"%s",owned && pad_list ? pad_list : "");
     char dns[2048], bus[192];
     snprintf(dns,sizeof(dns),"%s",getenv("MATON_FLATPAK_DNS") ? getenv("MATON_FLATPAK_DNS") : "");
-    snprintf(bus,sizeof(bus),"%s",getenv("DBUS_SESSION_BUS_ADDRESS") ? getenv("DBUS_SESSION_BUS_ADDRESS") : "");
+    if(owned) snprintf(bus,sizeof(bus),"unix:path=/data/matonos/linux/tmp/%u/bus",app.uid);
+    else snprintf(bus,sizeof(bus),"%s",getenv("DBUS_SESSION_BUS_ADDRESS") ? getenv("DBUS_SESSION_BUS_ADDRESS") : "");
     /* The installer UID cannot use linuxd's shared home/cache/runtime dirs;
      * linuxd creates installer-owned ones inside the operation directory. */
-    char staging[160], home[192], data_home[224], cache[192], tmp[192], runtime[192];
+    char staging[160], home[192], data_home[224], config_home[224], cache[192], tmp[192], runtime[192];
     if(installer_mode) {
         snprintf(staging,sizeof(staging),"%s",staging_request);
         snprintf(home,sizeof(home),"%s/home",staging);
@@ -300,17 +387,23 @@ int main(int argc, char** argv) {
         snprintf(data_home,sizeof(data_home),"/data/matonos/linux/flatpak-data/.local/share");
         snprintf(cache,sizeof(cache),"/data/matonos/linux/cache");
         snprintf(tmp,sizeof(tmp),"/tmp");
-        snprintf(runtime,sizeof(runtime),"/data/matonos/linux/runtime");
+        snprintf(runtime,sizeof(runtime),"/data/matonos/linux/run");
     }
+    snprintf(config_home,sizeof(config_home),"%s/.config",home);
     if (clearenv() != 0 ||
         setenv("PATH", MATON_FLATPAK_BIN ":/system/bin:/system/xbin", 1) != 0 ||
         setenv("XDG_RUNTIME_DIR", runtime, 1) != 0 ||
         setenv("HOME", home, 1) != 0 ||
         setenv("TMPDIR", tmp, 1) != 0 ||
         setenv("XDG_DATA_HOME", data_home, 1) != 0 ||
+        setenv("XDG_CONFIG_HOME", config_home, 1) != 0 ||
+        setenv("XDG_CACHE_HOME", cache, 1) != 0 ||
         setenv("FLATPAK_SYSTEM_DIR", installer_mode ? staging : flatpak_system_dir, 1) != 0 ||
         setenv("FLATPAK_SYSTEM_CACHE_DIR", cache, 1) != 0 ||
-        setenv("FLATPAK_USER_DIR", flatpak_user_dir, 1) != 0 ||
+        /* Flatpak checks this directory for extra-data even on --system
+         * installs. Keep that lookup inside the verified operation tree:
+         * the downloading app UID cannot traverse the legacy shared root. */
+        setenv("FLATPAK_USER_DIR", installer_mode ? staging : flatpak_user_dir, 1) != 0 ||
         setenv("FLATPAK_DOWNLOAD_TMPDIR", tmp, 1) != 0 ||
         setenv("SSL_CERT_DIR", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
         setenv("CURL_CA_BUNDLE", "/apex/com.android.conscrypt/cacerts", 1) != 0 ||
@@ -322,7 +415,7 @@ int main(int argc, char** argv) {
     if(setenv("MATON_SESSION_PAD_NODES",pads,1))return 127;
     /* Host-side CLI work (remote-add's temporary GnuPG home, downloads) uses
      * the temp dir of the app whose installation it operates on:
-     * /data/matonos/linux/apps/<uid>/tmp, preferring the stub's --user
+     * /data/matonos/linux/install/<uid>/tmp, preferring the stub's --user
      * installation over the runtime app's --system one. Android's /tmp is
      * shell-owned and not writable for us. Staging keeps its own tmp. */
     if(!installer_mode && !owned) {
@@ -343,7 +436,7 @@ int main(int argc, char** argv) {
                 setenv("FLATPAK_DOWNLOAD_TMPDIR","/data/matonos/linux/cache",1)) return 127;
     }
     if(owned) {
-        if(setenv("MATON_APP_DATA_DIR",app.data_dir,1))return 127;
+        if(setenv("MATON_APP_DATA_DIR",app.data_dir,1)||setenv("MATON_APP_HOME_DIR",app.home,1))return 127;
         char owner[384],uid[32];
         snprintf(owner,sizeof(owner),"%u:%d:%d:%s",app.uid,app.pid,app.controllers,app.id);
         snprintf(uid,sizeof(uid),"%u",app.uid);
@@ -365,23 +458,38 @@ int main(int argc, char** argv) {
         }
         if(setenv("DBUS_SESSION_BUS_ADDRESS",bus,1))return 127;
     }
-    if(session_directory>=0)close(session_directory);
-    if(x11_directory>=0)close(x11_directory);
     if(owned) {
         if(fsetxattr(app.group,"user.app_id",app.id,strlen(app.id),0)) {
             if(errno!=EOPNOTSUPP && errno!=ENOTSUP){perror("cgroup app_id");return 127;}
             fprintf(stderr,"matonos-flatpak: cgroup user.app_id unsupported\n");
         }
+        char app_runtime[64];snprintf(app_runtime,sizeof(app_runtime),"/data/matonos/linux/tmp/%u",app.uid);
         if(setenv("HOME",app.home,1)||
-           setenv("XDG_RUNTIME_DIR",app.home,1)||setenv("FLATPAK_SYSTEM_CACHE_DIR",app.home,1)||
+           setenv("XDG_RUNTIME_DIR",app_runtime,1)||setenv("FLATPAK_SYSTEM_CACHE_DIR",app.home,1)||
+           setenv("TMPDIR",app_runtime,1)||setenv("FLATPAK_DOWNLOAD_TMPDIR",app_runtime,1)||
            setenv("FLATPAK_USER_DIR",app.data_dir,1))return 127;
-        char data[160];snprintf(data,sizeof(data),"%s/.local/share",app.home);
-        if(setenv("XDG_DATA_HOME",data,1))return 127;
+        // GLib's Android defaults include /data/cache, outside this app's
+        // home. Explicit XDG roots keep filesystem=host from binding that
+        // protected Android directory while building the sandbox (Kate/VLC).
+        char data[160], config[160], app_cache[160];
+        snprintf(data,sizeof(data),"%s/.local/share",app.home);
+        snprintf(config,sizeof(config),"%s/.config",app.home);
+        snprintf(app_cache,sizeof(app_cache),"%s/.cache",app.home);
+        if(setenv("XDG_DATA_HOME",data,1)||setenv("XDG_CONFIG_HOME",config,1)||
+                setenv("XDG_CACHE_HOME",app_cache,1))return 127;
+        int portal_control=-1;
+        if(start_app_portal(&app,static_config,&portal_control)) {
+            fprintf(stderr,"matonos-flatpak: stock portal failed to become ready\n");return 127;
+        }
         pid_t child=initial?fork():0;
         if(child<0)return 127;
         if(child==0) {
             if(app.lifeline>=0)close(app.lifeline);
             if(session_enter(&app)){perror("matonos-flatpak: enter app sandbox");_exit(127);}
+            /* The home is mode 0700 and owned by the app UID. Validate it
+             * after switching to that identity instead of requiring linuxd's
+             * system UID to bypass the directory's DAC permissions. */
+            if(session_home(&app)){perror("matonos-flatpak: unverified app home");_exit(127);}
             int home=open(app.home,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
             if(home>=0) {
                 char gtk[384];const char* versions[]={"gtk-3.0","gtk-4.0"};
@@ -395,7 +503,26 @@ int main(int argc, char** argv) {
              * the sandbox's static-NDK transition launcher. */
             if(setenv("MATON_APP_LABEL",app.app_label,1))_exit(127);
             unsetenv("MATON_APP_OWNER");unsetenv("MATON_APP_UID");
-            execv(MATON_FLATPAK_BIN "/matonos-flatpak",argv);_exit(127);
+            // Android's host root includes protected /data directories and
+            // is not a Linux desktop filesystem. Keep the app's own home
+            // (bound by our bwrap shim) and its explicit grants; suppress
+            // only the blanket host export that makes Kate/VLC fail setup.
+            // Flatpak clears bwrap's environment, so carry the verified X11
+            // socket through its bundled --setenv arguments as before.
+            char option[224];
+            snprintf(option,sizeof(option),"--env=MATON_X11_SOCKET=%s",x11_socket);
+            char** args=calloc((size_t)argc+3,sizeof(char*));
+            if(!args)_exit(127);
+            int count=0;
+            for(int i=0;i<argc;i++) {
+                args[count++]=argv[i];
+                if(!strcmp(argv[i],"run")) {
+                    args[count++]="--nofilesystem=host";
+                    if(x11_socket[0])args[count++]=option;
+                }
+            }
+            execv(MATON_FLATPAK_BIN "/matonos-flatpak",args);
+            perror("matonos-flatpak: exec app CLI");_exit(127);
         }
         int status=0,exited=0;
         for(;;) {
@@ -405,9 +532,10 @@ int main(int argc, char** argv) {
             if(rc>0 && life.revents){session_kill(&app);break;}
             if(exited && !session_has_payload(&app))break;
         }
-        int supervisor=0;
-        if(sscanf(bus,"unix:path=" SESSION_BUS_DIRECTORY "/bus",&supervisor)==1 && supervisor>0)kill(supervisor,SIGTERM);
         if(!exited)while(waitpid(child,&status,0)<0 && errno==EINTR){}
+        kill(app.portal,SIGTERM);
+        while(waitpid(app.portal,NULL,0)<0&&errno==EINTR){}
+        close(portal_control);
         close(app.group);close(app.lifeline);
         return WIFEXITED(status)?WEXITSTATUS(status):128+WTERMSIG(status);
     }
