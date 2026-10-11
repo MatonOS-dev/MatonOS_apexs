@@ -16,6 +16,7 @@
  * then hand the real bwrap the extended argv.
  */
 #include "controller-access.h"
+#include "linux-paths.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -38,6 +39,9 @@
 #ifndef MATON_FLATPAK_BIN
 #define MATON_FLATPAK_BIN "/apex/com.matonos.flatpak/bin"
 #endif
+#ifndef MATON_FLATPAK_ETC
+#define MATON_FLATPAK_ETC "/apex/com.matonos.flatpak/etc"
+#endif
 #ifndef MATON_MACHINE_ID_PATH
 #define MATON_MACHINE_ID_PATH "/data/matonos/linux/machine-id"
 #endif
@@ -57,7 +61,15 @@
  * verified app domain before exec'ing the payload. */
 #define APP_EXEC_HOST MATON_FLATPAK_BIN "/matonos-app-exec"
 #define APP_EXEC_SANDBOX "/run/matonos/matonos-app-exec"
+/* SysV shm helper (linux/sysvipc/shm-helper.c), one build per glibc ABI. */
+#define SHM_HELPER_HOST MATON_FLATPAK_ETC "/sysvipc/libmaton-shm-"
+#define SHM_HELPER_PRELOAD "/run/matonos/$LIB/libmaton-shm.so"
 #define APP_LABEL_ENV "MATON_APP_LABEL"
+#if __has_include("../../install/linuxd/DownloadsGrant.h")
+#include "../../install/linuxd/DownloadsGrant.h"
+#else
+#include "install/linuxd/DownloadsGrant.h"
+#endif
 
 /* Values each bwrap option consumes, mirroring parse_args_recurse()
  * in bubblewrap's bubblewrap.c. Unknown dashed arguments count as
@@ -125,12 +137,23 @@ static char* next_string(char* p, char* end) {
     return nul+1;
 }
 
+/* Flatpak's own /dev/shm: a per-app directory (--allow=per-app-dev-shm,
+ * shared by all of an app's sandboxes, e.g. Steam and its web helper) or a
+ * private tmpfs. A bind of the host's /dev/shm itself is neither: on Android
+ * that one is global. */
+static int provides_dev_shm(const char* option, const char* first, const char* second) {
+    if(!strcmp(option,"--tmpfs"))return first && !strcmp(first,"/dev/shm");
+    if(strcmp(option,"--bind") && strcmp(option,"--ro-bind") && strcmp(option,"--dev-bind") &&
+       strcmp(option,"--bind-try") && strcmp(option,"--ro-bind-try") && strcmp(option,"--dev-bind-try"))return 0;
+    return first && second && !strcmp(second,"/dev/shm") && strcmp(first,"/dev/shm");
+}
+
 /* Recover the relay socket path from the bundled --args FD data:
  * flatpak converted MATON_X11_SOCKET into a --setenv VAR VALUE
  * triplet there. The FD is rewound to its original offset so the
  * real bwrap still reads the arguments from the start (bwrap's
  * load_file_data() reads from the current offset). */
-static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app_sandbox) {
+static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app_sandbox, int* shm_provided) {
     char* data=NULL;
     size_t capacity=0, length=0;
     char *p,*end,*socket_path=NULL;
@@ -175,6 +198,11 @@ static char* args_fd_x11_socket(int fd, int* x11_tmpfs, char** journal, int* app
         } else if(!strcmp(p,"--tmpfs")) {
             value=next_string(p,end);
             if(value && !strcmp(value,"/tmp/.X11-unix"))*x11_tmpfs=1;
+        }
+        {
+            char* first=values>=1 ? next_string(p,end) : NULL;
+            char* second=values>=2 && first ? next_string(first,end) : NULL;
+            if(provides_dev_shm(p,first,second))*shm_provided=1;
         }
         /* Values and command arguments must not masquerade as options. */
         for(int i=0;i<=values && p;i++)p=next_string(p,end);
@@ -329,23 +357,27 @@ int main(int argc, char** argv) {
     char* bundled_probe_root = NULL;
 #endif
     char* pad_nodes=NULL;
+    char* download_wire=NULL;
+    MatonFolderRequests downloads={0};
     char** extra;
     int count=0;
+    const char* front_home=NULL;
 
-    int x11_tmpfs=0, app_sandbox=0;
+    int x11_tmpfs=0, app_sandbox=0, shm_provided=0;
     char* bundled=NULL;
     char* bundled_journal=NULL;
     char* app_label=NULL;
     command=scan_argv(argc,argv,&args_end,&dashdash);
     for(int i=1;i<command && strcmp(argv[i],"--");) {
         if(!strcmp(argv[i],"--setenv") && i+2<command && !strcmp(argv[i+1],"FLATPAK_ID"))app_sandbox=1;
+        if(provides_dev_shm(argv[i],i+1<command?argv[i+1]:NULL,i+2<command?argv[i+2]:NULL))shm_provided=1;
         i+=1+option_values(argv[i]);
     }
     /* Only the app sandbox gets the binds: flatpak's own --tmpfs
      * /tmp/.X11-unix (from --socket=x11) marks X11 access, FLATPAK_ID
      * the app itself. Helper sandboxes such as xdg-dbus-proxy inherit
      * the variables but have neither and must stay untouched. */
-    if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox);
+    if(args_end>=0)bundled=args_fd_x11_socket(atoi(argv[args_end-1]),&x11_tmpfs,&bundled_journal,&app_sandbox,&shm_provided);
     if(args_end>=0)app_label=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_LABEL");
 #ifdef MATONOS_HOST_LAUNCH_PROBE
     if(args_end>=0)bundled_probe_root=args_fd_lookup(atoi(argv[args_end-1]),"MATONOS_BWRAP_PROBE_ROOT");
@@ -374,7 +406,16 @@ int main(int argc, char** argv) {
     if(!journal_path || !*journal_path)journal_path=bundled_journal;
     if(args_end>=0)pad_nodes=args_fd_lookup(atoi(argv[args_end-1]),"MATON_SESSION_PAD_NODES");
     if(!pad_nodes && getenv("MATON_SESSION_PAD_NODES"))pad_nodes=strdup(getenv("MATON_SESSION_PAD_NODES"));
-    extra = calloc(96 + 3 * 8, sizeof(char*));
+    if(app_sandbox && app_label) {
+        if(args_end>=0)download_wire=args_fd_lookup(atoi(argv[args_end-1]),"MATON_DOWNLOAD_GRANTS");
+        if(!download_wire && getenv("MATON_DOWNLOAD_GRANTS"))download_wire=strdup(getenv("MATON_DOWNLOAD_GRANTS"));
+        if(maton_folders_decode(download_wire,&downloads,1)) {
+            fprintf(stderr,"matonos-bwrap: invalid Downloads grant\n");return 125;
+        }
+    }
+    if(argc>INT32_MAX-128 || downloads.count>((size_t)INT32_MAX-(size_t)argc-128)/3 ||
+            downloads.count>(SIZE_MAX/sizeof(char*)-128)/3)return 125;
+    extra = calloc(128 + downloads.count*3, sizeof(char*));
     if (!extra) return 127;
     if(app_sandbox && pad_nodes && *pad_nodes) {
         char* state;unsigned pads=0;
@@ -422,6 +463,13 @@ int main(int argc, char** argv) {
     /* flatpak-run.c only uses the host ID if /etc or /var has one.
      * Android has neither. Override both paths after Flatpak mounts /var. */
     if(app_sandbox) {
+        /* Android's /dev/shm is global (--device=all binds all of /dev).
+         * Unless Flatpak set up its own per-app or private one, give this
+         * sandbox a private POSIX shared-memory mount after /dev is built. */
+        if(!shm_provided) {
+            extra[count++]="--perms";extra[count++]="1777";
+            extra[count++]="--tmpfs";extra[count++]="/dev/shm";
+        }
         extra[count++]="--ro-bind";extra[count++]=(char*)machine_id_path;extra[count++]="/etc/machine-id";
         extra[count++]="--ro-bind";extra[count++]=(char*)machine_id_path;extra[count++]="/var/lib/dbus/machine-id";
         /* Flatpak already exposes /sys/class, /sys/dev and /sys/devices.
@@ -434,29 +482,80 @@ int main(int argc, char** argv) {
          * support this generic hint and watch /dev/input with inotify (or
          * poll when inotify is unavailable), including permission changes. */
         extra[count++]="--setenv";extra[count++]="SDL_JOYSTICK_DISABLE_UDEV";extra[count++]="1";
+        /* SysV shared memory needs an in-process mmap (the supervisor injects
+         * the memfd). glibc's $LIB picks the build for each process's ABI;
+         * bind it under the multiarch and lib64/lib32 spellings. */
+        static const char* const helper_dirs[][3]={
+            {"x86_64","/run/matonos/lib/x86_64-linux-gnu/libmaton-shm.so","/run/matonos/lib64/libmaton-shm.so"},
+            {"i386","/run/matonos/lib/i386-linux-gnu/libmaton-shm.so","/run/matonos/lib32/libmaton-shm.so"},
+        };
+        static char helper_host[2][96];
+        int helpers=0;
+        for(int i=0;i<2;i++) {
+            snprintf(helper_host[i],sizeof(helper_host[i]),SHM_HELPER_HOST "%s.so",helper_dirs[i][0]);
+            if(access(helper_host[i],R_OK))continue;
+            for(int j=1;j<3;j++){extra[count++]="--ro-bind";extra[count++]=helper_host[i];extra[count++]=(char*)helper_dirs[i][j];}
+            helpers++;
+        }
+        if(helpers){extra[count++]="--setenv";extra[count++]="LD_PRELOAD";extra[count++]=SHM_HELPER_PRELOAD;}
     }
     /* r24: expose the launcher and its label inside the app sandbox. bwrap
      * calls it as the command; it setcon()s to the app domain and execs the
      * verified payload. */
+    /* Switch into the app domain unless already there. The shim runs in
+     * matonos_bwrap (its exec label) on a normal launch; bwrap then execs
+     * matonos-app-exec, which enters matonos_app_launch and setcon()s to the
+     * app. A nested sandbox (portal Spawn from inside an app) already runs in
+     * matonos_linux_app, which its children inherit, and matonos-app-exec
+     * rightly refuses to run there, so it is not inserted. */
+    /* Fail closed: if the context is unreadable, insert it anyway. */
+    int launcher=app_sandbox && app_label;
+    if(launcher) {
+        char own[160]={0};
+        int fd=open("/proc/thread-self/attr/current",O_RDONLY|O_CLOEXEC);
+        if(fd>=0) {
+            ssize_t got=read(fd,own,sizeof(own)-1);
+            close(fd);
+            if(got>0&&!strncmp(own,"u:r:matonos_linux_app:",sizeof("u:r:matonos_linux_app:")-1))launcher=0;
+        }
+    }
     if(app_sandbox && app_label) {
         const char* data=getenv("MATON_APP_HOME_DIR");
         if(!data && args_end>=0)data=args_fd_lookup(atoi(argv[args_end-1]),"MATON_APP_HOME_DIR");
-        unsigned uid=0;char trailing;
-        if(!data || sscanf(data,"/data/matonos/linux/home/%u%c",&uid,&trailing)!=1 ||
-           uid%100000<10000 || uid%100000>19999) {
+        unsigned uid=0;
+        if(!maton_parse_home_path(data,&uid)) {
             fprintf(stderr,"matonos-bwrap: invalid app home in launch arguments\n");return 125;
         }
         static char home[192];
         snprintf(home,sizeof(home),"%s",data);
-        extra[count++]="--bind";extra[count++]=home;extra[count++]=home;
+        /* The home bind goes in front of everything (see below); only
+         * HOME itself travels with the other injected arguments. */
+        front_home=home;
         extra[count++]="--setenv";extra[count++]="HOME";extra[count++]=home;
+        for(size_t d=0;d<downloads.count;d++) {
+            struct stat st;int fd=downloads.items[d].fd;
+            if(fstat(fd,&st) || !S_ISDIR(st.st_mode) || !(fcntl(fd,F_GETFL)&O_PATH)) {
+                fprintf(stderr,"matonos-bwrap: invalid Downloads directory fd\n");return 125;
+            }
+            char* number=NULL;char* target=NULL;
+            const char* sub=downloads.items[d].subpath;
+            if(asprintf(&number,"%d",fd)<0 || asprintf(&target,"%s/%s%s%s",home,
+                    maton_shared_folders[0].sandbox,*sub?"/":"",sub)<0)return 125;
+            extra[count++]=downloads.items[d].readonly?"--ro-bind-fd":"--bind-fd";
+            extra[count++]=number;extra[count++]=target;
+        }
+        /* Bubblewrap consumes/closes every bind-fd after mounting, including
+         * in its namespace parent. The app sees only the resulting mount. */
+        extra[count++]="--unsetenv";extra[count++]="MATON_DOWNLOAD_GRANTS";
         /* The app's runtime dir (Wayland socket + session bus) is fixed at
          * /data/matonos/linux/tmp/<uid>; expose it at the same path. */
         static char runtime_dir[64];
         snprintf(runtime_dir,sizeof(runtime_dir),"/data/matonos/linux/tmp/%u",uid);
         extra[count++]="--bind";extra[count++]=runtime_dir;extra[count++]=runtime_dir;
         extra[count++]="--setenv";extra[count++]="XDG_RUNTIME_DIR";extra[count++]=runtime_dir;
-        extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
+        if(launcher) {
+            extra[count++]="--ro-bind";extra[count++]=APP_EXEC_HOST;extra[count++]=APP_EXEC_SANDBOX;
+        }
         extra[count++]="--setenv";extra[count++]=APP_LABEL_ENV;extra[count++]=app_label;
     }
     if(count) {
@@ -470,15 +569,25 @@ int main(int argc, char** argv) {
          * before the command. */
         at=args_end>=0 ? args_end : (dashdash>=0 ? dashdash : command);
         extended=insert_args(argc,argv,at,extra,count);
+        int front=0;
+        if(extended && front_home) {
+            /* Flatpak's own mounts (the runtime on /usr first) arrive in
+             * the bundled --args. Binding the home before them makes it
+             * the first mount of its filesystem in /proc/self/mountinfo,
+             * which apps such as Steam use to name the library drive. */
+            char* home_bind[]={"--bind",(char*)front_home,(char*)front_home};
+            front=3;
+            extended=insert_args(argc+count,extended,1,home_bind,front);
+        }
         if(extended) {
             unsetenv(X11_SOCKET_ENV);
             unsetenv(JOURNAL_SOCKET_ENV);
             char** final_argv=extended;
-            if(app_label && command<argc) {
+            if(launcher && command<argc) {
                 /* The command was shifted right by the inserted arguments;
                  * put the launcher immediately in front of it. */
-                int shifted=command + (at<=command ? count : 0);
-                char** with_launcher=prepend_argument(extended,argc+count,shifted,APP_EXEC_SANDBOX);
+                int shifted=command + (at<=command ? count : 0) + front;
+                char** with_launcher=prepend_argument(extended,argc+count+front,shifted,APP_EXEC_SANDBOX);
                 if(with_launcher) final_argv=with_launcher;
             }
             /* The APEX multicall ELF selects the bwrap applet from argv[0].

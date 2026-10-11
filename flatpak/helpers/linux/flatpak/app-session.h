@@ -16,13 +16,14 @@
 #include <sys/xattr.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include "linux-paths.h"
 #include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
 typedef struct AppSession {
     unsigned uid;
-    int pid, controllers, lifeline, group, portal;
+    int pid, controllers, lifeline, group, portal, downloads;
     char home[128], data_dir[128], label[256], id[256], app_label[256];
 } AppSession;
 
@@ -62,8 +63,10 @@ static int session_owner(AppSession* s,int initial) {
      * Binder UID/PID before spawning us. This descriptor pins that exact
      * group across stub exit; never reopen a PID-derived path here. */
     if(initial){struct pollfd life={.fd=s->lifeline,.events=POLLIN};if(poll(&life,1,0)!=0){errno=EPERM;return -1;}}
-    snprintf(s->data_dir,sizeof(s->data_dir),"/data/matonos/linux/install/%u",s->uid);
-    snprintf(s->home,sizeof(s->home),"/data/matonos/linux/home/%u",s->uid);
+    if(maton_install_dir(s->data_dir,sizeof(s->data_dir),s->uid) ||
+       maton_home_dir(s->home,sizeof(s->home),s->uid))return -1;
+    const char* downloads=getenv("MATON_DOWNLOAD_GRANTS");
+    s->downloads=downloads && *downloads;
     return 0;
 }
 static int session_home(AppSession* s) {
@@ -102,8 +105,11 @@ static int session_enter(AppSession* s) {
     char pid[32];int n=snprintf(pid,sizeof(pid),"%d",getpid());
     int ok=write(fd,pid,(size_t)n)==n;close(fd);close(s->group);s->group=-1;
     if(!ok)return -1;
-    gid_t groups[2]={3003,2900}; /* Android inet and explicitly granted controllers. */
-    if(setgroups(s->controllers?2:1,groups)||setresgid(s->uid,s->uid,s->uid)||setresuid(s->uid,s->uid,s->uid))return -1;
+    gid_t groups[3]={3003,0,0}; /* inet, then only this launch's grants. */
+    size_t count=1;
+    if(s->controllers)groups[count++]=2900;
+    if(s->downloads)groups[count++]=1023; /* media_rw; ext_data_rw is Android/data only. */
+    if(setgroups(count,groups)||setresgid(s->uid,s->uid,s->uid)||setresuid(s->uid,s->uid,s->uid))return -1;
     struct __user_cap_header_struct h={.version=_LINUX_CAPABILITY_VERSION_3};
     struct __user_cap_data_struct caps[2]={{0}};
     if(syscall(SYS_capset,&h,caps))return -1;

@@ -9,6 +9,7 @@
  * so multicall dispatch does not need APEX symlinks (Soong drops prebuilt
  * symlinks from the payload).
  */
+#include "linux-paths.h"
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -27,6 +28,8 @@
 #include <sys/un.h>
 #include "machine-id.h"
 #include "app-session.h"
+#include "../../install/linuxd/DownloadsGrant.h"
+#include "../../install/linuxd/DownloadsUserDirs.h"
 #include "../dbus-broker/session-control.h"
 #include <stddef.h>
 
@@ -49,21 +52,20 @@ static int valid_dns_server(const char* server) {
     return strlen(zone+1)<16;
 }
 
+/* An install operation's staging repo: install/<uid>/staging/<operation>. */
+static int staging_directory_uid(const char* path, unsigned* result) {
+    const char* marker=path?strstr(path,"/staging/"):NULL;
+    if(!marker)return 0;
+    char root[128];size_t len=(size_t)(marker-path);
+    if(len>=sizeof(root))return 0;
+    memcpy(root,path,len);root[len]=0;
+    const char* op=marker+9;size_t op_len=strlen(op);
+    if(!op_len || op_len>64)return 0;
+    for(size_t i=0;i<op_len;i++){char c=op[i];if(!((c>='a'&&c<='z')||(c>='A'&&c<='Z')||(c>='0'&&c<='9')||c=='_'||c=='-'))return 0;}
+    return maton_parse_install_path(root,result);
+}
 static int install_directory_uid(const char* path, unsigned* result) {
-    unsigned uid = 0;
-    char trailing;
-    char expected[128];
-    if (!path) return 0;
-    if (sscanf(path, "/data/matonos/linux/install/%u%c", &uid, &trailing) == 1)
-        snprintf(expected, sizeof(expected), "/data/matonos/linux/install/%u", uid);
-    else if (sscanf(path, "/data/matonos/linux/runtime/%u%c", &uid, &trailing) == 1)
-        snprintf(expected, sizeof(expected), "/data/matonos/linux/runtime/%u", uid);
-    else
-        return 0;
-    if (uid % 100000 < 10000 || uid % 100000 > 19999) return 0;
-    if (strcmp(path, expected)) return 0;
-    *result = uid;
-    return 1;
+    return maton_parse_install_path(path,result) || maton_parse_path(path,"de","runtime",result);
 }
 
 static int monitor_file(int directory, const char* name, const char* text) {
@@ -210,6 +212,9 @@ static int start_app_portal(AppSession* app,const char* monitor,int* control) {
     if(portal<0)goto fail;
     if(!portal) {
         close(ready[0]);close(gate[1]);close(app->lifeline);
+        /* The portal is outside the final mount namespace. Its Spawn
+         * children must not receive the lower-storage capabilities. */
+        app->downloads=0;unsetenv("MATON_DOWNLOAD_GRANTS");
         snprintf(app->label,sizeof(app->label),"%s",app->app_label);
         if(session_enter(app)||session_home(app)||
                 /* UID changes make /proc ownership root until dumpability is reset.
@@ -257,12 +262,12 @@ fail:
     return -1;
 }
 /* Staging runs as the installing app's UID in its own operation directory:
- * /data/matonos/linux/install/<euid>/staging/<operation>, owned by that UID. */
+ * /data/misc_de/<u>/matonos-linux/install/<euid>/staging/<operation>, owned by that UID. */
 static int installer_staging_valid(const char* path) {
     char prefix[96];
     uid_t uid=geteuid();
     if(uid<10000 || uid%100000<10000 || uid%100000>19999)return 0;
-    int n=snprintf(prefix,sizeof(prefix),"/data/matonos/linux/install/%u/staging/",(unsigned)uid);
+    int n=snprintf(prefix,sizeof(prefix),MATON_DE_ROOT_FORMAT "/install/%u/staging/", maton_user_of((unsigned)uid), (unsigned)uid);
     if(n<0 || n>=(int)sizeof(prefix) || strncmp(path,prefix,(size_t)n))return 0;
     const char* op=path+n;
     size_t len=strlen(op);
@@ -292,6 +297,17 @@ int main(int argc, char** argv) {
     if(owned && session_owner(&app,initial)) {
         perror("matonos-flatpak: unverified app owner");return 127;
     }
+    MatonFolderRequests downloads={0};
+    if(owned && maton_folders_decode(getenv("MATON_DOWNLOAD_GRANTS"),&downloads,1)) {
+        fprintf(stderr,"matonos-flatpak: invalid Downloads capabilities\n");return 127;
+    }
+    for(size_t i=0;i<downloads.count;i++) {
+        struct stat st;int fd=downloads.items[i].fd;
+        if(fstat(fd,&st) || !S_ISDIR(st.st_mode) || !(fcntl(fd,F_GETFL)&O_PATH) ||
+                fcntl(fd,F_SETFD,FD_CLOEXEC)) {
+            fprintf(stderr,"matonos-flatpak: invalid Downloads directory fd\n");return 127;
+        }
+    }
     if(owned){char uid[32];snprintf(uid,sizeof(uid),"%u",app.uid);if(setenv("MATON_APP_UID",uid,1))return 127;}
     char flatpak_system_dir[128], flatpak_user_dir[128];
     const char* supplied_system_dir=getenv("FLATPAK_SYSTEM_DIR");
@@ -307,10 +323,19 @@ int main(int argc, char** argv) {
         snprintf(flatpak_system_dir,sizeof(flatpak_system_dir),"%s",supplied_system_dir);
         snprintf(flatpak_user_dir,sizeof(flatpak_user_dir),"%s",supplied_user_dir);
     } else {
+        /* Installer mode replaces both with the validated staging dir. */
+        unsigned install_uid;
+        if(!installer_mode && ((!supplied_system_dir && !supplied_user_dir) ||
+           (supplied_system_dir && !install_directory_uid(supplied_system_dir,&install_uid) &&
+                !staging_directory_uid(supplied_system_dir,&install_uid)) ||
+           (supplied_user_dir && !install_directory_uid(supplied_user_dir,&install_uid) &&
+                !staging_directory_uid(supplied_user_dir,&install_uid)))) {
+            fprintf(stderr,"matonos-flatpak: verified per-user installation required\n");return 127;
+        }
         snprintf(flatpak_system_dir,sizeof(flatpak_system_dir),"%s",
-                supplied_system_dir ? supplied_system_dir : "/data/matonos/linux/flatpak");
+                supplied_system_dir ? supplied_system_dir : supplied_user_dir ? supplied_user_dir : staging_request);
         snprintf(flatpak_user_dir,sizeof(flatpak_user_dir),"%s",
-                supplied_user_dir ? supplied_user_dir : "/data/matonos/linux/flatpak-user");
+                supplied_user_dir ? supplied_user_dir : supplied_system_dir ? supplied_system_dir : staging_request);
     }
     const char* bwrap = MATON_FLATPAK_BIN "/matonos-bwrap";
     if(!installer_mode) {
@@ -415,7 +440,7 @@ int main(int argc, char** argv) {
     if(setenv("MATON_SESSION_PAD_NODES",pads,1))return 127;
     /* Host-side CLI work (remote-add's temporary GnuPG home, downloads) uses
      * the temp dir of the app whose installation it operates on:
-     * /data/matonos/linux/install/<uid>/tmp, preferring the stub's --user
+     * /data/misc_de/<u>/matonos-linux/install/<uid>/tmp, preferring the stub's --user
      * installation over the runtime app's --system one. Android's /tmp is
      * shell-owned and not writable for us. Staging keeps its own tmp. */
     if(!installer_mode && !owned) {
@@ -457,6 +482,11 @@ int main(int argc, char** argv) {
             fprintf(stderr,"matonos-flatpak: missing compositor session bus\n");return 127;
         }
         if(setenv("DBUS_SESSION_BUS_ADDRESS",bus,1))return 127;
+        // Stock Flatpak binds pulse/native and pipewire-0 from this runtime
+        // directory. Derive the path only from the authenticated stub UID.
+        char pulse[192];
+        snprintf(pulse,sizeof(pulse),"unix:/data/matonos/linux/tmp/%u/pulse/native",app.uid);
+        if(setenv("PULSE_SERVER",pulse,1))return 127;
     }
     if(owned) {
         if(fsetxattr(app.group,"user.app_id",app.id,strlen(app.id),0)) {
@@ -491,7 +521,11 @@ int main(int argc, char** argv) {
              * system UID to bypass the directory's DAC permissions. */
             if(session_home(&app)){perror("matonos-flatpak: unverified app home");_exit(127);}
             int home=open(app.home,O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+            if(home<0){perror("matonos-flatpak: open app home");_exit(127);}
             if(home>=0) {
+                if(maton_download_user_dirs(home,app.id)) {
+                    perror("matonos-flatpak: prepare Downloads directory");close(home);_exit(127);
+                }
                 char gtk[384];const char* versions[]={"gtk-3.0","gtk-4.0"};
                 for(unsigned i=0;i<2;i++) {
                     snprintf(gtk,sizeof(gtk),".var/app/%s/config/%s",app.id,versions[i]);
@@ -513,6 +547,12 @@ int main(int argc, char** argv) {
             snprintf(option,sizeof(option),"--env=MATON_X11_SOCKET=%s",x11_socket);
             char** args=calloc((size_t)argc+3,sizeof(char*));
             if(!args)_exit(127);
+            /* Flatpak's foreground run inherits descriptors that do not
+             * have CLOEXEC, through flatpak_bwrap_child_setup(..., FALSE).
+             * Auxiliaries/portal execs above kept them CLOEXEC. Bubblewrap
+             * consumes these descriptors using the shim's bind-fd options. */
+            for(size_t d=0;d<downloads.count;d++)
+                if(fcntl(downloads.items[d].fd,F_SETFD,0))_exit(127);
             int count=0;
             for(int i=0;i<argc;i++) {
                 args[count++]=argv[i];
