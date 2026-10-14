@@ -5,6 +5,7 @@
  */
 
 #include "FlatpakStore.h"
+#include "FlatpakPublish.h"
 
 #include "../../linux/flatpak/linux-paths.h"
 #include <errno.h>
@@ -42,13 +43,13 @@ static int stage_args_valid(int argc, char** argv) {
     if (argc != 6 || !argv || !argv[1] || strcmp(argv[1], "stage") || !argv[2] || !argv[3]) return 0;
     char* end = NULL; long uid = strtol(argv[3], &end, 10);
     char expected[PATH_MAX];
-    if (!end || *end || uid > INT_MAX || uid < 10000 || uid % 100000 < 10000 || uid % 100000 > 19999 ||
-            snprintf(expected, sizeof(expected), MATON_DE_ROOT_FORMAT "/install/%ld/staging/", maton_user_of((unsigned)(uid)), uid) >= (int)sizeof(expected) ||
+    if (!end || *end || uid != MATON_FPINSTALL_UID ||
+            snprintf(expected, sizeof(expected), MATON_STAGING_ROOT "/%ld/", uid) >= (int)sizeof(expected) ||
             strncmp(argv[2], expected, strlen(expected)) || !argv[2][strlen(expected)] ||
             strchr(argv[2] + strlen(expected), '/')) return 0;
     struct stat st;
     return !lstat(argv[2], &st) && S_ISDIR(st.st_mode) && st.st_uid == (uid_t)uid &&
-            argv[4] && *argv[4] && argv[5] && *argv[5];
+            argv[4] && *argv[4] && argv[4][0]!='-' && argv[5] && *argv[5] && argv[5][0]!='-';
 }
 
 /* linuxd supplies a validated remote and ref. This helper fixes the staging
@@ -58,16 +59,18 @@ static int stage_flatpak_ref(int argc, char** argv) {
         return fail("stage needs the per-installer staging directory, UID, remote and ref");
     uid_t uid = (uid_t)strtoul(argv[3], NULL, 10);
     /* Keep only inet: netd's DNS socket (/dev/socket/dnsproxyd) is root:inet.
-     * Apps get this group from INTERNET; linuxd only stages for verified
-     * generated stubs, which all declare INTERNET. */
+     * The fixed installer identity uses netd natively. */
     const gid_t inet = 3003;  /* AID_INET */
     if (setgroups(1, &inet) || setresgid(uid, uid, uid) || setresuid(uid, uid, uid))
         return fail("cannot enter installer UID: %s", strerror(errno));
     if (setenv("MATON_FLATPAK_STAGING_DIR", argv[2], 1))
         return fail("cannot select staging installation: %s", strerror(errno));
     /* argv[0] selects the applet; the wrapper dispatches instead of symlinks. */
+    /* --assumeyes keeps unattended operation; the regular CLI emits progress.
+     * --noninteractive selects the quiet transaction and hides download progress. */
+    setenv("LC_ALL", "C", 1);
     char* const flatpak_argv[] = {"flatpak", "install", "--system",
-        "--no-deploy", "--noninteractive", "--assumeyes", argv[4], argv[5], NULL};
+        "--no-deploy", "--assumeyes", argv[4], argv[5], NULL};
     execv(MATONOS_FLATPAK_WRAPPER, flatpak_argv);
     return fail("cannot start static Flatpak staging pull: %s", strerror(errno));
 }

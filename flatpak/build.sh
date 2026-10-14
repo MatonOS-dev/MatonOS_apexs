@@ -29,7 +29,6 @@ mkdir -p "$BUILD" "$PREFIX" "$OUT"
 rm -f "$OUT/flatpak" "$OUT/ostree" "$OUT/bwrap" \
   "$OUT/flatpak.unstripped" "$OUT/ostree.unstripped" "$OUT/bwrap.unstripped" \
   "$OUT/matonos-flatpak" "$OUT/matonos-flatpak.unstripped" \
-  "$OUT/flatpak-env-wrapper" "$OUT/matonos-bwrap" "$OUT/matonos-app-exec" \
   "$OUT/matonos-flatpak-store" "$OUT/SOURCE"
 export PATH="$(dirname "$NINJA"):$PATH"
 export CC CXX AR RANLIB=$TOOL/llvm-ranlib STRIP
@@ -192,7 +191,7 @@ fi
 
 FLATPAK_CFLAGS="-O2 -fPIC -include $SRC/bionic-fill.h"
 FLATPAK_CXXFLAGS="-O2 -fPIC -stdlib=libc++ -include $SRC/bionic-fill.h"
-meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dgtkdoc=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="$LDFLAGS" -Dcpp_link_args="$LDFLAGS"
+meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dgtkdoc=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-app-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="$LDFLAGS" -Dcpp_link_args="$LDFLAGS"
 "$NINJA" -C "$BUILD/flatpak" -j "$JOBS"
 python3 "$HERE/make-multicall.py" "$BUILD" "$OUT/matonos-flatpak.unstripped" "$TOOL/llvm-objcopy" "$CC"
 "$STRIP" --strip-all "$OUT/matonos-flatpak.unstripped" -o "$OUT/matonos-flatpak"
@@ -201,6 +200,6 @@ OUT_DIR="$OUT" ANDROID_NDK="$NDK" "$HERE/build-helpers.sh"
 python3 "$HERE/license-gate.py"
 {
   echo 'flatpak-bionic source manifest'; cat "$HERE/sources.lock"; echo
-  for bin in matonos-flatpak flatpak-env-wrapper matonos-bwrap matonos-app-exec matonos-flatpak-store; do sha256sum "$OUT/$bin"; done
+  for bin in matonos-flatpak matonos-flatpak-store; do sha256sum "$OUT/$bin"; done
 } > "$OUT/SOURCE"
 echo "Artifacts and provenance written to $OUT"

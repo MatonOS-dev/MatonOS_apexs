@@ -22,10 +22,13 @@ static inline int safe_directory_at(int rootfd, const char* path, int create) {
         char* slash = strchr(part, '/');
         if (slash) *slash = 0;
         if (!*part || !strcmp(part, ".") || !strcmp(part, "..")) { close(fd); errno = EINVAL; return -1; }
-        int next = openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        /* Intermediate dirs only need search: O_PATH avoids SELinux read on
+         * ancestors such as /data. The final dir is readable for fdopendir. */
+        int mode = slash ? O_PATH : O_RDONLY;
+        int next = openat(fd, part, mode | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         if (next < 0 && errno == ENOENT && create) {
             if (mkdirat(fd, part, 0700)) { int error = errno; close(fd); errno = error; return -1; }
-            next = openat(fd, part, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            next = openat(fd, part, mode | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
         }
         int error = errno;
         close(fd);
@@ -71,7 +74,7 @@ static inline FILE* safe_fopen_absolute(const char* path) {
     char* slash = strrchr(copy, '/');
     if (!slash || !slash[1]) { errno = EINVAL; return NULL; }
     *slash = 0;
-    int root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    int root = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC); /* O_PATH: no rootfs read */
     if (root < 0) return NULL;
     int dirfd = safe_directory_at(root, copy, 0);
     close(root);
@@ -88,7 +91,7 @@ static inline FILE* safe_fopen_absolute(const char* path) {
 
 static inline DIR* safe_opendir_absolute(const char* path) {
     if (!path || path[0] != '/') { errno = EINVAL; return NULL; }
-    int root = open("/", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    int root = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC); /* O_PATH: no rootfs read */
     if (root < 0) return NULL;
     int fd = safe_directory_at(root, path + 1, 0);
     close(root);
