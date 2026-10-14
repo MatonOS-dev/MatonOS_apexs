@@ -191,6 +191,9 @@ fi
 
 FLATPAK_CFLAGS="-O2 -fPIC -include $SRC/bionic-fill.h"
 FLATPAK_CXXFLAGS="-O2 -fPIC -stdlib=libc++ -include $SRC/bionic-fill.h"
+# system_dbus_proxy names a path that is deliberately NOT shipped: since v1 the
+# stub-hosted per-app bus (dbus-java + broker) filters D-Bus, so no app uses
+# xdg-dbus-proxy. Leaving the option unset would build Flatpak's bundled copy.
 meson setup "$BUILD/flatpak" "$SRC/flatpak" $MCOMMON -Dtests=false -Dinstalled_tests=false -Ddocbook_docs=disabled -Dgtkdoc=disabled -Dman=disabled -Dgir=disabled -Ddconf=disabled -Dsystemd=disabled -Dsystem_helper=disabled -Dmalcontent=disabled -Dselinux_module=disabled -Dauto_sideloading=false -Dxauth=disabled -Dsystem_bubblewrap=/apex/com.matonos.flatpak/bin/matonos-app-bwrap -Dsystem_dbus_proxy=/apex/com.matonos.flatpak/bin/xdg-dbus-proxy -Dc_args="$FLATPAK_CFLAGS" -Dcpp_args="$FLATPAK_CXXFLAGS" -Dc_link_args="$LDFLAGS" -Dcpp_link_args="$LDFLAGS"
 "$NINJA" -C "$BUILD/flatpak" -j "$JOBS"
 python3 "$HERE/make-multicall.py" "$BUILD" "$OUT/matonos-flatpak.unstripped" "$TOOL/llvm-objcopy" "$CC"
